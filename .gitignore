@@ -1,0 +1,12 @@
+.env
+.env.*
+!.env.example
+.private/
+__pycache__/
+*.py[cod]
+data/input/*
+!data/input/.gitkeep
+data/output/*
+!data/output/.gitkeep
+logs/*
+!logs/.gitkeep

@@ -1,0 +1,13 @@
+base_url: https://elearning.fudan.edu.cn
+courses:
+- '114614'
+extensions:
+- .ppt
+include_patterns:
+- '*'
+ignore_patterns: []
+only_file_ids: null
+ignore_file_ids: []
+output_dir: data/output
+announcement_days: 90
+request_interval: 0.4
