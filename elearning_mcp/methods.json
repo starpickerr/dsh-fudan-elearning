@@ -1,0 +1,85 @@
+{
+  "get_settings": {
+    "read_only": true,
+    "params": []
+  },
+  "get_cursors": {
+    "read_only": true,
+    "params": []
+  },
+  "list_courses": {
+    "read_only": true,
+    "params": []
+  },
+  "fetch": {
+    "read_only": true,
+    "params": [
+      "since",
+      "until",
+      "course_ids",
+      "offset",
+      "limit"
+    ]
+  },
+  "fetch_source": {
+    "read_only": true,
+    "params": [
+      "cursors",
+      "since",
+      "until"
+    ]
+  },
+  "list_files": {
+    "read_only": true,
+    "params": [
+      "course_ids",
+      "file_ids",
+      "file_extensions",
+      "offset",
+      "limit"
+    ]
+  },
+  "save_settings": {
+    "read_only": false,
+    "params": [
+      "payload"
+    ]
+  },
+  "delete_settings": {
+    "read_only": false,
+    "params": []
+  },
+  "save_file_sync_settings": {
+    "read_only": false,
+    "params": [
+      "root"
+    ]
+  },
+  "test_connection": {
+    "read_only": false,
+    "params": [
+      "payload"
+    ]
+  },
+  "set_cursors": {
+    "read_only": false,
+    "params": [
+      "cursors"
+    ]
+  },
+  "drain_audit_events": {
+    "read_only": false,
+    "params": []
+  },
+  "sync_files": {
+    "read_only": false,
+    "params": [
+      "course_ids",
+      "file_ids",
+      "file_extensions",
+      "layout",
+      "offset",
+      "limit"
+    ]
+  }
+}

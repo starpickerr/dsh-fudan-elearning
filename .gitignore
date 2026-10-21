@@ -10,3 +10,10 @@ data/output/*
 !data/output/.gitkeep
 logs/*
 !logs/.gitkeep
+
+.venv/
+.pytest_cache/
+
+build/
+dist/
+*.egg-info/

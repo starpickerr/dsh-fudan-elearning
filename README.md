@@ -212,3 +212,7 @@ python -m unittest discover -s tests -v
 - [Canvas 作业接口](https://developerdocs.instructure.com/services/canvas/resources/assignments)
 - [Canvas 分页](https://developerdocs.instructure.com/services/canvas/basics/file.pagination)
 - [Playwright 登录状态](https://playwright.dev/python/docs/auth)
+
+## MCP Server
+
+Local stdio MCP entry and existing-state compatibility: [MCP.md](MCP.md). The original CLI remains available.
