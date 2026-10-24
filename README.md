@@ -1,5 +1,7 @@
 # 复旦 elearning 自动化助手
 
+能力简介由本服务维护在 `elearning_mcp/capability.json`，作为包数据发布。Stella 只读取这份公开元数据，不为显示简介导入或启动服务；独立打包产物将其放在 `_internal/elearning_mcp/`。
+
 所有操作统一通过 **main.py** 启动。在脚本文件夹内运行：
 
 ```sh

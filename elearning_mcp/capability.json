@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "name": "elearning",
+  "description": {
+    "zh": "通过独立的 eLearning MCP 服务查询课程、采集课程信息并同步课程文件。在配置中设置账号、课程范围和文件保存目录，使用前需要有效的课程平台连接。",
+    "en": "Use the independent eLearning MCP service to query courses, collect course information, and sync course files. Configure the account, course scope, and file destination under Configuration; a valid learning-platform connection is required."
+  }
+}
