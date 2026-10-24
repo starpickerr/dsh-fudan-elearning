@@ -25,6 +25,9 @@ DESCRIPTIONS = {
     "fetch_messages": "只读获取指定邮箱的邮件及建议游标；消费成功后才能提交游标，不自动标为已读。",
 }
 
+TOOL_TITLES = {'fetch': '获取课程数据', 'list_courses': '查询课程',
+               'list_files': '查询文件', 'sync_files': '同步课件'}
+
 
 def parameter_schema(name):
     if name in {"payload", "cursors"}:
@@ -55,6 +58,7 @@ def create_server(data_dir, legacy_dir=None, user_id="local-default"):
         return [
             Tool(
                 name=name,
+                title=TOOL_TITLES.get(name),
                 description=DESCRIPTIONS.get(name, f"eLearning: {name}"),
                 inputSchema={
                     "type": "object",
