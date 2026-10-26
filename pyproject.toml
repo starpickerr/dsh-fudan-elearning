@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stella-elearning-mcp"
-version = "1.0.3"
+version = "1.0.4"
 description = "Independent local elearning MCP server"
 requires-python = ">=3.11"
 dependencies = ["mcp==1.30.0", "playwright>=1.40,<2"]

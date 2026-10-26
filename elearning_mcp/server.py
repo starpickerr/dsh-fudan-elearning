@@ -12,6 +12,7 @@ import anyio
 from mcp.server.lowlevel import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import CallToolResult, TextContent, Tool, ToolAnnotations
+from . import __version__
 from .service import ElearningService
 
 
@@ -51,7 +52,7 @@ def create_server(data_dir, legacy_dir=None, user_id="local-default"):
     data_dir = Path(data_dir).expanduser().resolve()
     data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     methods = json.loads(Path(__file__).with_name("methods.json").read_text())
-    server = Server("elearning")
+    server = Server("elearning", version=__version__)
 
     @server.list_tools()
     async def list_tools():
