@@ -170,13 +170,16 @@ def _download(client, url, directory_fd, cancel_event=None):
     if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
         raise SyncError("课程文件下载地址必须是 HTTPS")
     host = parsed.hostname.lower()
-    if host == "localhost" or host.endswith(".localhost"):
-        raise SyncError("课程文件下载地址不能指向本机")
-    try:
-        if ipaddress.ip_address(host).is_private:
-            raise SyncError("课程文件下载地址不能指向私有网络")
-    except ValueError:
-        pass
+    # An injected controlled opener validates the actual DNS/IP receiver,
+    # including explicitly configured local services. Standalone keeps its guard.
+    if getattr(client, 'opener_factory', None) is None:
+        if host == "localhost" or host.endswith(".localhost"):
+            raise SyncError("课程文件下载地址不能指向本机")
+        try:
+            if ipaddress.ip_address(host).is_private:
+                raise SyncError("课程文件下载地址不能指向私有网络")
+        except ValueError:
+            pass
     for attempt in range(3):
         try:
             return _download_once(client, url, directory_fd, cancel_event)
@@ -266,7 +269,7 @@ def _current_configuration(store, config, course_id):
         raise SyncError("课程文件同步设置已变更，请检查 eLearning 设置")
 
 
-def sync_files(client, config, rows, store, cancel_event=None, layout="managed"):
+def sync_files(client, config, rows, store, cancel_event=None, layout="managed", check_output=None):
     """Save changed files; return per-file errors without hiding briefing data."""
     if layout not in ("managed", "courseware"):
         raise ValueError("invalid eLearning file layout")
@@ -274,6 +277,8 @@ def sync_files(client, config, rows, store, cancel_event=None, layout="managed")
         return []
     _check_cancelled(cancel_event)
     root = Path(config.get("file_sync_root") or "")
+    if check_output is not None:
+        check_output(root)
     if not root.is_absolute() or ".." in root.parts:
         return ["课程文件保存目录无效，请重新选择目录"]
     try:
@@ -297,7 +302,7 @@ def sync_files(client, config, rows, store, cancel_event=None, layout="managed")
                     logger.info("[eLearningFileSync] processing %d/%d course=%s file=%s",
                                 index, len(rows), course.get("id"), raw.get("id"))
                     try:
-                        _sync_one(client, config, store, root, root_fd, manifest, course, raw, cancel_event, layout)
+                        _sync_one(client, config, store, root, root_fd, manifest, course, raw, cancel_event, layout, check_output)
                     except SyncCancelled:
                         raise
                     except Exception as exc:
@@ -315,7 +320,7 @@ def sync_files(client, config, rows, store, cancel_event=None, layout="managed")
     return errors
 
 
-def _sync_one(client, config, store, root, materials_fd, manifest, course, raw, cancel_event=None, layout="managed"):
+def _sync_one(client, config, store, root, materials_fd, manifest, course, raw, cancel_event=None, layout="managed", check_output=None):
     _check_cancelled(cancel_event)
     course_id, file_id = str(course["id"]), str(raw["id"])
     _current_configuration(store, config, course_id)
@@ -331,6 +336,8 @@ def _sync_one(client, config, store, root, materials_fd, manifest, course, raw, 
     folder = manifest["courses"][course_id]
     if not _manifest_name(folder):
         raise SyncError("课程文件目录记录无效")
+    if check_output is not None:
+        check_output(root / folder)
     course_fd = _open_child(materials_fd, folder)
     try:
         directory_fd = _open_child(course_fd, "课件") if layout == "courseware" else course_fd
@@ -344,6 +351,8 @@ def _sync_one(client, config, store, root, materials_fd, manifest, course, raw, 
         name = previous.get("name") or (_courseware_filename(raw) if layout == "courseware" else _filename(raw))
         if not _manifest_name(name):
             raise SyncError("课程文件名记录无效")
+        if check_output is not None:
+            check_output(root / folder / '课件' / name if layout == 'courseware' else root / folder / name)
         if layout == "courseware" and not previous and any(
             entry.get("name") == name for other_key, entry in manifest["files"].items()
             if other_key != key and other_key.startswith(course_id + ":") and isinstance(entry, dict)
@@ -379,6 +388,8 @@ def _sync_one(client, config, store, root, materials_fd, manifest, course, raw, 
                     if _digest_existing(directory_fd, name, cancel_event) is not None:
                         name = _versioned_filename(base, f"{remote[:8]}-{downloaded_digest[:8]}")
                 destination = root / folder / "课件" / name if layout == "courseware" else root / folder / name
+                if check_output is not None:
+                    check_output(destination)
                 store.record_audit(tool="elearning", operation="download", resource=str(destination), event="file_modify",
                        risk="L1", decision="allow", reason="Configured course file sync within the selected folder.")
                 _check_cancelled(cancel_event)

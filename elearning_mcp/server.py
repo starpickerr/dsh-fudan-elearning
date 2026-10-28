@@ -11,9 +11,13 @@ import threading
 import anyio
 from mcp.server.lowlevel import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import CallToolResult, TextContent, Tool, ToolAnnotations
+from mcp.types import CallToolResult, TextContent, Tool, ToolAnnotations, Request, Result
 from . import __version__
 from .service import ElearningService
+
+
+class HostedRequest(Request):
+    params: dict
 
 
 DESCRIPTIONS = {
@@ -48,9 +52,10 @@ def parameter_schema(name):
     )
 
 
-def create_server(data_dir, legacy_dir=None, user_id="local-default"):
+def create_server(data_dir, legacy_dir=None, user_id="local-default", *, hosted_connector=False):
     data_dir = Path(data_dir).expanduser().resolve()
-    data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if not hosted_connector:
+        data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     methods = json.loads(Path(__file__).with_name("methods.json").read_text())
     server = Server("elearning", version=__version__)
 
@@ -83,7 +88,7 @@ def create_server(data_dir, legacy_dir=None, user_id="local-default"):
             for name, spec in methods.items()
         ]
 
-    @server.call_tool()
+    @server.call_tool(validate_input=not hosted_connector)
     async def call_tool(name, arguments):
         if name not in methods:
             raise ValueError("Unknown tool")
@@ -91,6 +96,16 @@ def create_server(data_dir, legacy_dir=None, user_id="local-default"):
             methods[name]["params"]
         ):
             raise ValueError("Unknown tool parameters")
+        if hosted_connector:
+            if arguments:
+                raise PermissionError('Hosted eLearning arguments are owned by Core')
+            result = await server.request_context.session.send_request(
+                HostedRequest(method='stella/elearning/invoke', params={'requestId': server.request_context.request_id}),
+                Result,
+            )
+            value = result.model_dump(mode='json', exclude_none=True)
+            return CallToolResult(content=[TextContent(type='text', text=json.dumps(value, ensure_ascii=False))],
+                                  structuredContent=value)
         meta = server.request_context.meta
         scope = getattr(meta, "resourceScope", None) if meta else None
         resources = None
@@ -143,8 +158,9 @@ async def main():
     parser.add_argument("--data-dir", type=Path, required=True)
     parser.add_argument("--legacy-dir", type=Path)
     parser.add_argument("--user-id", default="local-default")
+    parser.add_argument('--hosted-connector', action='store_true')
     args = parser.parse_args()
-    server = create_server(args.data_dir, args.legacy_dir, args.user_id)
+    server = create_server(args.data_dir, args.legacy_dir, args.user_id, hosted_connector=args.hosted_connector)
     async with stdio_server() as (read, write):
         await server.run(read, write, server.create_initialization_options())
 

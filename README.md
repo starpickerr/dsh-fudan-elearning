@@ -2,6 +2,8 @@
 
 能力简介由本服务维护在 `elearning_mcp/capability.json`，作为包数据发布。Stella 只读取这份公开元数据，不为显示简介导入或启动服务；独立打包产物将其放在 `_internal/elearning_mcp/`。
 
+Stella 托管模式使用 `--hosted-connector`：隔离 MCP 仅触发 Core 当前已批准的单次操作，不接收账号密码、Token、Cookie 或业务文件访问权限。Core 复用固定摘要验证的业务模块、原登录流程及原数据路径；凭据通过 Keychain 使用，同步文件继续检查原输出目录和文件权限。独立运行模式保持原有配置方式。
+
 所有操作统一通过 **main.py** 启动。在脚本文件夹内运行：
 
 ```sh
