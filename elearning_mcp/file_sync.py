@@ -1,6 +1,7 @@
 """Download selected Canvas files into the configured course folder."""
 from __future__ import annotations
 
+from contextlib import contextmanager
 import hashlib
 import http.client
 import ipaddress
@@ -169,13 +170,16 @@ def _download(client, url, directory_fd, cancel_event=None):
     if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
         raise SyncError("课程文件下载地址必须是 HTTPS")
     host = parsed.hostname.lower()
-    if host == "localhost" or host.endswith(".localhost"):
-        raise SyncError("课程文件下载地址不能指向本机")
-    try:
-        if ipaddress.ip_address(host).is_private:
-            raise SyncError("课程文件下载地址不能指向私有网络")
-    except ValueError:
-        pass
+    # An injected controlled opener validates the actual DNS/IP receiver,
+    # including explicitly configured local services. Standalone keeps its guard.
+    if getattr(client, 'opener_factory', None) is None:
+        if host == "localhost" or host.endswith(".localhost"):
+            raise SyncError("课程文件下载地址不能指向本机")
+        try:
+            if ipaddress.ip_address(host).is_private:
+                raise SyncError("课程文件下载地址不能指向私有网络")
+        except ValueError:
+            pass
     for attempt in range(3):
         try:
             return _download_once(client, url, directory_fd, cancel_event)
@@ -183,6 +187,24 @@ def _download(client, url, directory_fd, cancel_event=None):
             if attempt == 2:
                 raise SyncError("课程文件传输中断，已重试 3 次；下次同步会继续尝试") from exc
             _wait(cancel_event, 2 ** attempt)
+
+
+@contextmanager
+def _temporary_directory(root, fallback):
+    # Core owns this per-operation namespace and reclaims it after Worker exit.
+    # Standalone servers retain their existing adjacent temporary-file behavior.
+    value = os.environ.get("STELLA_MCP_OUTPUT_TEMP")
+    if value is None:
+        yield fallback
+        return
+    path = Path(value)
+    if not path.is_absolute() or ".." in path.parts or path == root or not path.is_relative_to(root):
+        raise SyncError("课程文件临时目录必须位于配置目录内")
+    descriptor = _open_directory(path)
+    try:
+        yield descriptor
+    finally:
+        os.close(descriptor)
 
 
 def _download_once(client, url, directory_fd, cancel_event=None):
@@ -247,7 +269,7 @@ def _current_configuration(store, config, course_id):
         raise SyncError("课程文件同步设置已变更，请检查 eLearning 设置")
 
 
-def sync_files(client, config, rows, store, cancel_event=None, layout="managed"):
+def sync_files(client, config, rows, store, cancel_event=None, layout="managed", check_output=None):
     """Save changed files; return per-file errors without hiding briefing data."""
     if layout not in ("managed", "courseware"):
         raise ValueError("invalid eLearning file layout")
@@ -255,6 +277,8 @@ def sync_files(client, config, rows, store, cancel_event=None, layout="managed")
         return []
     _check_cancelled(cancel_event)
     root = Path(config.get("file_sync_root") or "")
+    if check_output is not None:
+        check_output(root)
     if not root.is_absolute() or ".." in root.parts:
         return ["课程文件保存目录无效，请重新选择目录"]
     try:
@@ -278,7 +302,7 @@ def sync_files(client, config, rows, store, cancel_event=None, layout="managed")
                     logger.info("[eLearningFileSync] processing %d/%d course=%s file=%s",
                                 index, len(rows), course.get("id"), raw.get("id"))
                     try:
-                        _sync_one(client, config, store, root, root_fd, manifest, course, raw, cancel_event, layout)
+                        _sync_one(client, config, store, root, root_fd, manifest, course, raw, cancel_event, layout, check_output)
                     except SyncCancelled:
                         raise
                     except Exception as exc:
@@ -296,7 +320,7 @@ def sync_files(client, config, rows, store, cancel_event=None, layout="managed")
     return errors
 
 
-def _sync_one(client, config, store, root, materials_fd, manifest, course, raw, cancel_event=None, layout="managed"):
+def _sync_one(client, config, store, root, materials_fd, manifest, course, raw, cancel_event=None, layout="managed", check_output=None):
     _check_cancelled(cancel_event)
     course_id, file_id = str(course["id"]), str(raw["id"])
     _current_configuration(store, config, course_id)
@@ -312,6 +336,8 @@ def _sync_one(client, config, store, root, materials_fd, manifest, course, raw, 
     folder = manifest["courses"][course_id]
     if not _manifest_name(folder):
         raise SyncError("课程文件目录记录无效")
+    if check_output is not None:
+        check_output(root / folder)
     course_fd = _open_child(materials_fd, folder)
     try:
         directory_fd = _open_child(course_fd, "课件") if layout == "courseware" else course_fd
@@ -325,6 +351,8 @@ def _sync_one(client, config, store, root, materials_fd, manifest, course, raw, 
         name = previous.get("name") or (_courseware_filename(raw) if layout == "courseware" else _filename(raw))
         if not _manifest_name(name):
             raise SyncError("课程文件名记录无效")
+        if check_output is not None:
+            check_output(root / folder / '课件' / name if layout == 'courseware' else root / folder / name)
         if layout == "courseware" and not previous and any(
             entry.get("name") == name for other_key, entry in manifest["files"].items()
             if other_key != key and other_key.startswith(course_id + ":") and isinstance(entry, dict)
@@ -341,39 +369,42 @@ def _sync_one(client, config, store, root, materials_fd, manifest, course, raw, 
         if not isinstance(url, str) or not url:
             raise SyncError("课程文件没有可用的下载地址")
         logger.info("[eLearningFileSync] downloading course=%s file=%s", course_id, file_id)
-        temporary, downloaded_digest = _download(client, url, directory_fd, cancel_event)
-        logger.info("[eLearningFileSync] downloaded course=%s file=%s", course_id, file_id)
-        try:
-            _check_cancelled(cancel_event)
-            _current_configuration(store, config, course_id)
-            existing_digest = _digest_existing(directory_fd, name, cancel_event)
-            if layout == "courseware" and existing_digest == downloaded_digest:
+        with _temporary_directory(root, directory_fd) as temporary_fd:
+            temporary, downloaded_digest = _download(client, url, temporary_fd, cancel_event)
+            logger.info("[eLearningFileSync] downloaded course=%s file=%s", course_id, file_id)
+            try:
+                _check_cancelled(cancel_event)
+                _current_configuration(store, config, course_id)
+                existing_digest = _digest_existing(directory_fd, name, cancel_event)
+                if layout == "courseware" and existing_digest == downloaded_digest:
+                    manifest["files"][key] = {"remote": remote, "name": name, "sha256": downloaded_digest}
+                    _save_manifest(store, config, manifest, layout)
+                    return
+                # Never replace an existing user-visible file: it may be edited
+                # after any digest check. New remote versions get exclusive names.
+                if existing_digest is not None:
+                    base = _courseware_filename(raw) if layout == "courseware" else _filename(raw)
+                    name = _versioned_filename(base, remote[:8])
+                    if _digest_existing(directory_fd, name, cancel_event) is not None:
+                        name = _versioned_filename(base, f"{remote[:8]}-{downloaded_digest[:8]}")
+                destination = root / folder / "课件" / name if layout == "courseware" else root / folder / name
+                if check_output is not None:
+                    check_output(destination)
+                store.record_audit(tool="elearning", operation="download", resource=str(destination), event="file_modify",
+                       risk="L1", decision="allow", reason="Configured course file sync within the selected folder.")
+                _check_cancelled(cancel_event)
+                _current_configuration(store, config, course_id)
+                _check_directory(destination.parent, directory_fd)
+                os.link(temporary, name, src_dir_fd=temporary_fd, dst_dir_fd=directory_fd,
+                        follow_symlinks=False)
+                os.unlink(temporary, dir_fd=temporary_fd)
                 manifest["files"][key] = {"remote": remote, "name": name, "sha256": downloaded_digest}
                 _save_manifest(store, config, manifest, layout)
-                return
-            # Never replace an existing user-visible file: it may be edited
-            # after any digest check. New remote versions get exclusive names.
-            if existing_digest is not None:
-                base = _courseware_filename(raw) if layout == "courseware" else _filename(raw)
-                name = _versioned_filename(base, remote[:8])
-                if _digest_existing(directory_fd, name, cancel_event) is not None:
-                    name = _versioned_filename(base, f"{remote[:8]}-{downloaded_digest[:8]}")
-            destination = root / folder / "课件" / name if layout == "courseware" else root / folder / name
-            store.record_audit(tool="elearning", operation="download", resource=str(destination), event="file_modify",
-                   risk="L1", decision="allow", reason="Configured course file sync within the selected folder.")
-            _check_cancelled(cancel_event)
-            _current_configuration(store, config, course_id)
-            _check_directory(destination.parent, directory_fd)
-            os.link(temporary, name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd,
-                    follow_symlinks=False)
-            os.unlink(temporary, dir_fd=directory_fd)
-            manifest["files"][key] = {"remote": remote, "name": name, "sha256": downloaded_digest}
-            _save_manifest(store, config, manifest, layout)
-        finally:
-            try:
-                os.unlink(temporary, dir_fd=directory_fd)
-            except FileNotFoundError:
-                pass
+            finally:
+                try:
+                    os.unlink(temporary, dir_fd=temporary_fd)
+                except FileNotFoundError:
+                    pass
     finally:
         if directory_fd != course_fd:
             os.close(directory_fd)

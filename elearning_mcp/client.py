@@ -41,7 +41,8 @@ def cookie_matches_host(domain, host):
 
 
 class Canvas:
-    def __init__(self, config, store, cookies=None, auto_login=True, cancel_event=None, progress_callback=None):
+    def __init__(self, config, store, cookies=None, auto_login=True, cancel_event=None, progress_callback=None,
+                 opener_factory=None, context_setup=None, login_config=None):
         self.config = config
         self.store = store
         self.base = config["base_url"].rstrip("/")
@@ -49,6 +50,7 @@ class Canvas:
         self.interval = max(float(config.get("request_interval", 0.4)), 0)
         self.cancel_event = cancel_event
         self.progress_callback = progress_callback
+        self.opener_factory, self.context_setup, self.login_config = opener_factory, context_setup, login_config
         # Verification during browser login must never trigger another browser login.
         self.auto_login = auto_login and cookies is None
         # Explicit browser cookies must be verified independently of any configured Token.
@@ -61,13 +63,13 @@ class Canvas:
             self._renew_login()
 
     def _load_cookies(self, cookies=None):
+        from_browser = cookies is not None
         jar = http.cookiejar.CookieJar()
-        auth = self.store.session_path(self.config)
         if cookies is None and not self.token:
-            if not auth.is_file():
-                raise LoginRequired("eLearning 尚无可用登录状态，请在 eLearning 设置中配置账号，或重新登录。")
             try:
-                cookies = json.loads(auth.read_text(encoding="utf-8"))["cookies"]
+                cookies = self.store.load_session(self.config)["cookies"]
+            except FileNotFoundError:
+                raise LoginRequired("eLearning 尚无可用登录状态，请在 eLearning 设置中配置账号，或重新登录。") from None
             except (ValueError, KeyError, TypeError):
                 raise LoginRequired("保存的登录状态无效，请重新登录。") from None
         if cookies is not None and not self.token:
@@ -92,14 +94,17 @@ class Canvas:
         if not self.token and not list(jar):
             raise LoginRequired("登录状态中没有可用的 elearning Cookie，请重新登录。")
         self.cookie_jar = jar
-        self.opener = urllib.request.build_opener(SafeRedirect(), urllib.request.HTTPCookieProcessor(jar))
+        self.opener = (self.opener_factory(jar, from_browser=from_browser) if self.opener_factory is not None else
+                       urllib.request.build_opener(SafeRedirect(), urllib.request.HTTPCookieProcessor(jar)))
 
     def _renew_login(self):
         self.check_cancelled()
         LOGGER.info("尚未登录或 Cookie 已失效，正在连接 eLearning……")
         LOGGER.info("开始自动登录")
         try:
-            login(self.config, self.store, cancel_event=self.cancel_event, progress_callback=self.progress_callback)
+            config = self.login_config() if self.login_config is not None else self.config
+            login(config, self.store, cancel_event=self.cancel_event, progress_callback=self.progress_callback,
+                  opener_factory=self.opener_factory, context_setup=self.context_setup)
             self._load_cookies()
         except SyncCancelled:
             raise
@@ -167,6 +172,8 @@ class Canvas:
                     self.wait(min(int(retry), 30) if retry.isdigit() else 2 ** attempt)
                     continue
                 raise SyncError("网站返回 HTTP {}。".format(code)) from None
+            except PermissionError:
+                raise
             except (urllib.error.URLError, TimeoutError, OSError):
                 if attempt < 3:
                     self.wait(2 ** attempt)
@@ -229,7 +236,8 @@ def ensure_login(config, store, cancel_event=None, progress_callback=None):
     return canvas
 
 
-def login(config, store, manual=False, cancel_event=None, progress_callback=None):
+def login(config, store, manual=False, cancel_event=None, progress_callback=None, *,
+          opener_factory=None, context_setup=None):
     def check_cancelled():
         if cancel_event is not None and cancel_event.is_set():
             raise SyncCancelled("eLearning 登录已取消")
@@ -251,16 +259,18 @@ def login(config, store, manual=False, cancel_event=None, progress_callback=None
         stage = "打开登录页面"
         launch_options = {"timeout": 5000} if cancel_event is not None else {}
         try:
-            browser = p.chromium.launch(channel="chrome", headless=not manual, **launch_options)
+            browser = p.chromium.launch(channel="chrome", headless=not manual, chromium_sandbox=True, **launch_options)
         except Exception:
             check_cancelled()
             try:
-                browser = p.chromium.launch(headless=not manual, **launch_options)
+                browser = p.chromium.launch(headless=not manual, chromium_sandbox=True, **launch_options)
             except Exception:
                 raise SyncError("无法打开浏览器，请安装 Chrome，或运行 python -m playwright install chromium。") from None
         try:
             check_cancelled()
             context = browser.new_context()
+            if context_setup is not None:
+                context_setup(context)
             page = context.new_page()
             page.goto(base + "/login", timeout=5000 if cancel_event is not None else 60000)
             check_cancelled()
@@ -304,7 +314,8 @@ def login(config, store, manual=False, cancel_event=None, progress_callback=None
                     cookies = [c for c in context.cookies() if cookie_matches_host(c["domain"], host)]
                     stage = "验证登录状态"
                     try:
-                        canvas = Canvas(config, store, cookies=cookies, cancel_event=cancel_event)
+                        canvas = Canvas(config, store, cookies=cookies, cancel_event=cancel_event,
+                                        opener_factory=opener_factory, context_setup=context_setup)
                         profile, _ = canvas.get("/api/v1/users/self/profile")
                         if isinstance(profile, dict) and profile.get("id"):
                             store.save_session(config, canvas.session_data())

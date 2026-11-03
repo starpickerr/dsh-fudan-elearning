@@ -185,3 +185,39 @@ def test_remote_update_preserves_concurrent_local_edit_at_publication(config_pat
     downloads = client.open.call_count
     assert file_sync.sync_files(client, cfg, rows, store) == []
     assert client.open.call_count == downloads
+
+
+def test_core_staging_keeps_partial_downloads_out_of_course_folders(config_path, tmp_path, monkeypatch):
+    root = tmp_path / 'selected'
+    staging = root / '.stella-mcp-output-test'
+    staging.mkdir(parents=True)
+    monkeypatch.setenv('STELLA_MCP_OUTPUT_TEMP', str(staging.resolve()))
+    settings.save_settings(config(file_sync_root=str(root.resolve())))
+    cfg = settings.load_settings()
+    client = Mock()
+
+    def download(*args, **kwargs):
+        assert len(list(staging.glob('.elearning-*'))) == 1
+        assert not list((root / '课程--42').glob('.elearning-*'))
+        return io.BytesIO(b'courseware')
+
+    client.open.side_effect = download
+    assert sync_files(client, cfg, _download_rows()) == []
+    assert next(root.rglob('*.pdf')).read_bytes() == b'courseware'
+    assert list(staging.iterdir()) == []
+
+
+@pytest.mark.parametrize('unsafe', ['symlink', 'outside'])
+def test_core_staging_rejects_directory_escape(config_path, tmp_path, monkeypatch, unsafe):
+    root, outside = tmp_path / 'selected', tmp_path / 'outside'
+    root.mkdir()
+    outside.mkdir()
+    staging = root / 'link'
+    staging.symlink_to(outside, target_is_directory=True)
+    monkeypatch.setenv('STELLA_MCP_OUTPUT_TEMP', str(staging if unsafe == 'symlink' else outside))
+    settings.save_settings(config(file_sync_root=str(root.resolve())))
+    client = Mock()
+    errors = sync_files(client, settings.load_settings(), _download_rows())
+    assert errors
+    client.open.assert_not_called()
+    assert list(outside.iterdir()) == []

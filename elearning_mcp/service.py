@@ -25,12 +25,13 @@ from .utils import parse_date
 
 class ElearningService:
     def __init__(self, data_dir, *, legacy_dir=None, client_factory=None, clock=None,
-                 cancel_event: threading.Event | None = None, authorized_resources=None, user_id=None):
+                 cancel_event: threading.Event | None = None, authorized_resources=None, user_id=None, store=None):
         self.authorized_resources, self.user_id = authorized_resources, user_id
-        self.store = ElearningStore(Path(data_dir))
+        self.store = store if store is not None else ElearningStore(Path(data_dir))
         self.client_factory = client_factory
         self.clock = clock or (lambda: datetime.now().astimezone())
         self.cancel_event = cancel_event
+        self.file_sync_guard = None
         if legacy_dir:
             self.store.import_legacy(legacy_dir)
 
@@ -264,7 +265,8 @@ class ElearningService:
         client, rows, errors = self._file_rows(cfg, params, authorized=True)
         page = rows[offset:offset + limit]
         self._check_cancelled()
-        errors.extend(_sync_files(client, cfg, page, self.store, cancel_event=self.cancel_event, layout=layout))
+        errors.extend(_sync_files(client, cfg, page, self.store, cancel_event=self.cancel_event, layout=layout,
+                                 check_output=self.file_sync_guard))
         return {"status": "partial" if errors else "completed", "total": len(rows),
                 "processed": len(page),
                 "next_offset": offset + len(page) if offset + len(page) < len(rows) else None,

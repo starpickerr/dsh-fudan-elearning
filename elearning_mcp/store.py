@@ -113,6 +113,9 @@ class ElearningStore:
         with state_lock(self.root):
             write_json(self.session_path(config), data)
 
+    def load_session(self, config):
+        return json.loads(self.session_path(config).read_text(encoding='utf-8'))
+
     def has_credentials(self, cfg):
         return bool(cfg["password"] or cfg["token"] or self.session_path(cfg).is_file())
 
@@ -207,13 +210,14 @@ class ElearningStore:
             cfg["password"] = cfg["token"] = ""
         if "file_sync_root" in payload:
             cfg["file_sync_root"] = self._directory(cfg["file_sync_root"])
-        password = payload.get("password", "")
-        if not isinstance(password, str):
-            raise ValueError("eLearning 密码格式无效")
-        if password and password != PASSWORD_MASK:
-            cfg["password"] = password
-        elif password == PASSWORD_MASK and not cfg["password"]:
-            raise ValueError("请填写新账号的 eLearning 密码")
+        for field in ('password', 'token'):
+            value = payload.get(field, '')
+            if not isinstance(value, str):
+                raise ValueError('eLearning 凭据格式无效')
+            if value and value != PASSWORD_MASK:
+                cfg[field] = value
+            elif value == PASSWORD_MASK and not cfg[field]:
+                raise ValueError('请填写新账号的 eLearning 凭据')
         if not cfg["password"] and not cfg["token"] and not self.session_path(cfg).is_file():
             raise ValueError("请填写 eLearning 密码")
         return cfg
