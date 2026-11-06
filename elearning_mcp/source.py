@@ -22,7 +22,7 @@ class ElearningSource:
     name = "elearning"
 
     def __init__(self, config, store, client_factory=None, cancel_event=None,
-                 on_items_ready=None, briefing_only=False):
+                 on_items_ready=None, briefing_only=False, include_existing_actionable=True):
         self.config = dict(config)
         self.store = store
         self.account_id = account_id(config)
@@ -32,6 +32,7 @@ class ElearningSource:
         self.cancel_event = cancel_event
         self.on_items_ready = on_items_ready
         self.briefing_only = briefing_only
+        self.include_existing_actionable = include_existing_actionable
 
     def _check_cancelled(self):
         if self.cancel_event is not None and self.cancel_event.is_set():
@@ -66,7 +67,7 @@ class ElearningSource:
             occurred = max((value for value in timestamps if value), default=None)
             if previous.get("fingerprint") == fingerprint:
                 occurred = parse_date(previous.get("occurred_at")) or occurred
-            elif not occurred or (previous and start and occurred <= start) or (not previous and actionable and start and occurred <= start):
+            elif not occurred or (previous and start and occurred <= start) or (not previous and actionable and self.include_existing_actionable and start and occurred <= start):
                 # A changed resource without a useful server timestamp, or an
                 # outstanding task discovered on first connection, is observed
                 # now. due_at is a deadline, never the event timestamp.

@@ -4,6 +4,16 @@
 
 Stella 托管模式使用 `--hosted-connector`：隔离 MCP 仅触发 Core 当前已批准的单次操作，不接收账号密码、Token、Cookie 或业务文件访问权限。Core 复用固定摘要验证的业务模块、原登录流程及原数据路径；凭据通过 Keychain 使用，同步文件继续检查原输出目录和文件权限。独立运行模式保持原有配置方式。
 
+## DSH 原生凭据连接
+
+标准 stdio MCP 独立入口为 `python -m elearning_mcp.server --data-dir /absolute/elearning-data`。DSH 集成使用独立的 `@stella/elearning` 插件：在 DSH 插件管理器的 eLearning 详情页配置学工号和密码，凭据通过 DSH 原生 `ctx.authorization` / `ctx.credentials` 保存，与模型 API Key 共用当前凭据库，不访问 macOS Keychain。不要同时配置另一个同名 `elearning` Client，也不要使用旧 `--hosted-connector`。
+
+宿主启动标准 stdio 时显式使用 `--dsh-credentials`，通过瞬时启动环境传递账号。Python 取出后立即移除环境项，不让后续浏览器继承。该模式只发布 `list_courses`、`fetch`、`list_files`，忽略原配置中的密码、Token 和 session 文件；Cookie 仅在进程内存保存。固定复旦登录地址，原账号一致时保留课程选择，普通独立模式不变。密码不进入工具结果或业务 JSON；网络／登录失败只返回固定错误，取消继续传递给操作线程。
+
+替换、删除和重启由宿主重建连接，下一次查询使用 DSH 当前凭据。DSH 默认 local provider 的文件权限为 0600，这并不提供同账号工具或可信插件之间的系统级隔离。旧凭据文件和钥匙串资料保持原位，不自动迁移、覆盖或删除。
+
+验证：`.venv/bin/python -m unittest tests.test_dsh_credentials -v`，覆盖原生账号输入边界、环境移除、旧秘密忽略、内存会话、无业务秘密写入、标准协议目录和伪造写入拒绝。真实学校账号由用户在 DSH 中重新输入后核验，不在测试或聊天中传密码。
+
 所有操作统一通过 **main.py** 启动。在脚本文件夹内运行：
 
 ```sh
