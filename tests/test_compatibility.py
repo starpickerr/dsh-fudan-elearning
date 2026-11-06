@@ -125,3 +125,36 @@ def test_domain_list_and_sync_files_only_to_configured_folder(tmp_path):
     service.save_file_sync_settings(str(root))
     service.save_settings({"courses": ["43"]})
     assert service.get_settings()["file_sync_root"] == str(root)
+
+def test_fetch_incremental_state_bounds_bootstrap_and_detects_older_changes(tmp_path):
+    service,canvas=_service(tmp_path)
+    service.save_settings(_settings())
+    old=canvas.rows['assignments'][0]
+    old['updated_at']='2026-01-01T00:00:00Z'
+    old['submission']['graded_at']='2026-01-01T00:00:00Z'
+    first=service.fetch(since='2026-09-08T12:00:00Z',until='2026-09-09T00:00:00Z',cursors={})
+    assert 'elearning_state' in first['cursors']
+    assert not any(row['payload']['resource_type'] in ('assignment','grade') for row in first['source_items'])
+    assert service.get_cursors()=={}, 'Only the consuming Host may commit proposed state'
+    again=service.fetch(since='2026-09-09T00:00:00Z',until='2026-09-10T00:00:00Z',cursors=first['cursors'])
+    assert again['source_items']==[]
+    old['submission']['score']=90
+    changed=service.fetch(since='2026-09-09T00:00:00Z',until='2026-09-10T00:00:00Z',cursors=first['cursors'])
+    assert {row['payload']['resource_type'] for row in changed['source_items']}=={'assignment','grade'}
+    assert changed['errors']==[]
+    assert PASSWORD not in json.dumps(changed)
+
+
+def test_fetch_cursor_is_optional_and_partial_pages_do_not_propose_progress(tmp_path):
+    service,canvas=_service(tmp_path)
+    service.save_settings(_settings())
+    args={'since':'2026-09-08T12:00:00Z','until':'2026-09-09T00:00:00Z','limit':2}
+    assert 'cursors' not in service.fetch(**args)
+    first=service.fetch(**args,cursors={})
+    second=service.fetch(**args,offset=first['next_offset'],cursors={})
+    assert first['cursors']==second['cursors']
+    assert not set(r['source_id'] for r in first['source_items']) & set(r['source_id'] for r in second['source_items'])
+    canvas.rows['quizzes']=importlib.import_module('elearning_mcp.errors').SyncError('Synthetic failure')
+    assert service.fetch(**args,cursors={})['cursors']=={}
+    with pytest.raises(ValueError,match='cursors'):
+        service.fetch(**args,cursors={'elearning_state':[]})

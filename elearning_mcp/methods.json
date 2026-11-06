@@ -18,7 +18,8 @@
       "until",
       "course_ids",
       "offset",
-      "limit"
+      "limit",
+      "cursors"
     ]
   },
   "fetch_source": {

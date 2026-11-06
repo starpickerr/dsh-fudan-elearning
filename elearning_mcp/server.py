@@ -52,11 +52,19 @@ def parameter_schema(name):
     )
 
 
-def create_server(data_dir, legacy_dir=None, user_id="local-default", *, hosted_connector=False):
+def create_server(data_dir, legacy_dir=None, user_id="local-default", *, hosted_connector=False, dsh_credentials=False):
+    if dsh_credentials and (hosted_connector or legacy_dir):
+        raise ValueError('DSH 凭据连接不能与旧托管模式或数据导入混用')
     data_dir = Path(data_dir).expanduser().resolve()
     if not hosted_connector:
         data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     methods = json.loads(Path(__file__).with_name("methods.json").read_text())
+    if dsh_credentials:
+        methods = {name: methods[name] for name in ('list_courses', 'fetch', 'list_files')}
+    store = None
+    if dsh_credentials:
+        from .dsh_credentials import DshCredentialStore
+        store = DshCredentialStore.from_environment(data_dir)
     server = Server("elearning", version=__version__)
 
     @server.list_tools()
@@ -134,6 +142,7 @@ def create_server(data_dir, legacy_dir=None, user_id="local-default", *, hosted_
                 cancel_event=cancel,
                 user_id=user_id,
                 authorized_resources=resources,
+                store=store,
             )
             value = getattr(service, name)(**arguments)
             return {"value": value}
@@ -146,6 +155,14 @@ def create_server(data_dir, legacy_dir=None, user_id="local-default", *, hosted_
                 ],
                 structuredContent=value,
             )
+        except Exception as error:
+            cancel.set()
+            if not dsh_credentials:
+                raise
+            from .errors import LoginRequired, SyncError
+            message = ('eLearning 登录未成功，请检查 DSH 中的账号密码和学校认证要求。'
+                       if isinstance(error, (LoginRequired, SyncError)) else 'eLearning 查询未成功，请检查网络和连接配置。')
+            return CallToolResult(isError=True, content=[TextContent(type='text', text=message)])
         except BaseException:
             cancel.set()
             raise
@@ -159,8 +176,9 @@ async def main():
     parser.add_argument("--legacy-dir", type=Path)
     parser.add_argument("--user-id", default="local-default")
     parser.add_argument('--hosted-connector', action='store_true')
+    parser.add_argument('--dsh-credentials', action='store_true', help='由 DSH 提供凭据，仅在内存中保存登录状态并开放三项查询')
     args = parser.parse_args()
-    server = create_server(args.data_dir, args.legacy_dir, args.user_id, hosted_connector=args.hosted_connector)
+    server = create_server(args.data_dir, args.legacy_dir, args.user_id, hosted_connector=args.hosted_connector, dsh_credentials=args.dsh_credentials)
     async with stdio_server() as (read, write):
         await server.run(read, write, server.create_initialization_options())
 

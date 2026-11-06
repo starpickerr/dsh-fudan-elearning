@@ -127,8 +127,10 @@ class ElearningService:
             raise ValueError("file_extensions 必须是扩展名列表，例如 pdf、ppt、pptx")
         return {value.lstrip(".").lower() for value in values}
 
-    def fetch(self, since=None, until=None, course_ids=None, offset=0, limit=20):
-        """Windowed, paged read of course resources (Agent / UI read purpose)."""
+    def fetch(self, since=None, until=None, course_ids=None, offset=0, limit=20, cursors=None):
+        """Windowed read; optional Host-owned cursors enable incremental briefing reads."""
+        if cursors is not None and (not isinstance(cursors, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in cursors.items())):
+            raise ValueError("cursors 必须是字符串游标对象")
         cfg = self._credentialed_settings()
         offset, limit = self._page({"offset": offset, "limit": limit})
         now = self.clock()
@@ -140,7 +142,7 @@ class ElearningService:
             end = parse_date(until)
         if not start or not end or start >= end:
             raise ValueError("请提供有效的 since/until 时间窗口，起点须早于终点")
-        selected = course_ids if course_ids is not None else (cfg.get("courses") or [])
+        selected = course_ids if course_ids is not None else ([] if cursors is not None else cfg.get("courses") or [])
         if not isinstance(selected, list) or any(not isinstance(value, str) or not value.strip() for value in selected):
             raise ValueError("course_ids 必须是课程 ID 列表")
         window = {"start": start.astimezone(timezone.utc).isoformat(),
@@ -157,18 +159,19 @@ class ElearningService:
                 return client
         if not selected:
             return {"source_items": [], "total": 0, "next_offset": None, "window": window,
-                    "status": "completed", "errors": []}
+                    "status": "completed", "errors": [], **({"cursors": {}} if cursors is not None else {})}
         self._authorize_courses(cfg, selected)
         source = ElearningSource({**cfg, "courses": selected}, self.store, client_factory=client_factory,
-                                 cancel_event=self.cancel_event)
-        fetched = source.fetch({"since": window["start"], "until": window["end"]})
+                                 cancel_event=self.cancel_event, briefing_only=cursors is not None,
+                                 include_existing_actionable=cursors is None)
+        fetched = source.fetch({**(cursors or {}), "since": window["start"], "until": window["end"]})
         rows = sorted((item for item in fetched.items if start < parse_date(item.occurred_at) <= end),
                       key=lambda item: (item.occurred_at, item.source_id))
         page = rows[offset:offset + limit]
         return {"source_items": [asdict(item) for item in page], "total": len(rows),
                 "next_offset": offset + len(page) if offset + len(page) < len(rows) else None,
                 "window": window, "status": "partial" if fetched.errors else "completed",
-                "errors": fetched.errors}
+                "errors": fetched.errors, **({"cursors": dict(fetched.cursors)} if cursors is not None else {})}
 
     def fetch_source(self, cursors=None, since=None, until=None):
         """Briefing/background fetch. Returns items plus *proposed* cursors.
