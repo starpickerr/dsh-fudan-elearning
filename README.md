@@ -1,20 +1,16 @@
-# 复旦 elearning 自动化助手
+# dsh-fudan-elearning
 
-能力简介由本服务维护在 `elearning_mcp/capability.json`，作为包数据发布。Stella 只读取这份公开元数据，不为显示简介导入或启动服务；独立打包产物将其放在 `_internal/elearning_mcp/`。
+复旦 eLearning 自动化助手，提供本地命令行程序和独立的 stdio MCP 服务。CLI 支持课程、作业、公告及文件整理；MCP 提供课程查询与文件同步。访问范围由学校账号权限决定。
 
-Stella 托管模式使用 `--hosted-connector`：隔离 MCP 仅触发 Core 当前已批准的单次操作，不接收账号密码、Token、Cookie 或业务文件访问权限。Core 复用固定摘要验证的业务模块、原登录流程及原数据路径；凭据通过 Keychain 使用，同步文件继续检查原输出目录和文件权限。独立运行模式保持原有配置方式。
+MCP 的安装、账号配置、工具和运行方式见 [MCP.md](MCP.md)。CLI 与 MCP 使用各自的数据配置：CLI 的 `.env` 不会自动提供给 MCP。服务能力简介保存在 `elearning_mcp/capability.json`，随包分发。
 
-## DSH 原生凭据连接
+## DSH 凭据模式
 
-标准 stdio MCP 独立入口为 `python -m elearning_mcp.server --data-dir /absolute/elearning-data`。DSH 集成使用独立的 `@stella/elearning` 插件：在 DSH 插件管理器的 eLearning 详情页配置学工号和密码，凭据通过 DSH 原生 `ctx.authorization` / `ctx.credentials` 保存，与模型 API Key 共用当前凭据库，不访问 macOS Keychain。不要同时配置另一个同名 `elearning` Client，也不要使用旧 `--hosted-connector`。
+服务支持由兼容宿主启动的 `--dsh-credentials` 模式。宿主负责凭据输入和连接管理，服务只开放 `list_courses`、`fetch` 和 `list_files`；此模式不能与 `--hosted-connector` 或 `--legacy-dir` 混用。它不读取旧配置中的密码、Token 或 session 文件，登录 Cookie 保存在进程内存中。账号替换、删除和重启需要由宿主重建连接。此仓库提供服务端模式，宿主插件的安装和兼容性需按所用发行版另行核实。
 
-宿主启动标准 stdio 时显式使用 `--dsh-credentials`，通过瞬时启动环境传递账号。Python 取出后立即移除环境项，不让后续浏览器继承。该模式只发布 `list_courses`、`fetch`、`list_files`，忽略原配置中的密码、Token 和 session 文件；Cookie 仅在进程内存保存。固定复旦登录地址，原账号一致时保留课程选择，普通独立模式不变。密码不进入工具结果或业务 JSON；网络／登录失败只返回固定错误，取消继续传递给操作线程。
+## CLI 使用
 
-替换、删除和重启由宿主重建连接，下一次查询使用 DSH 当前凭据。DSH 默认 local provider 的文件权限为 0600，这并不提供同账号工具或可信插件之间的系统级隔离。旧凭据文件和钥匙串资料保持原位，不自动迁移、覆盖或删除。
-
-验证：`.venv/bin/python -m unittest tests.test_dsh_credentials -v`，覆盖原生账号输入边界、环境移除、旧秘密忽略、内存会话、无业务秘密写入、标准协议目录和伪造写入拒绝。真实学校账号由用户在 DSH 中重新输入后核验，不在测试或聊天中传密码。
-
-所有操作统一通过 **main.py** 启动。在脚本文件夹内运行：
+CLI 操作通过 **main.py** 启动。在脚本文件夹内运行：
 
 ```sh
 conda activate elearning
@@ -26,7 +22,7 @@ python main.py
 ## 项目结构
 
 ```text
-main.py                  # 唯一程序入口：菜单、命令行调度
+main.py                  # CLI 入口：菜单、命令行调度
 config/config.yaml       # 课程、下载规则、输出路径等普通配置
 src/
   __init__.py
@@ -180,7 +176,7 @@ Cookie 到期、接口返回未认证状态，或下载跳转到登录页面时�
 
 URL 中的 `success` 表示登录流程的跳转结果。程序使用与同步相同的网络客户端验证账号接口，验证通过后才保存 Cookie 并显示“登录成功”。随后浏览器关闭，程序返回菜单，可以继续选择课程或同步。登录失败时会说明失败阶段；尚未通过验证的状态不会保存。
 
-登录和课程读取已通过本机账号验证；具体作业和文件的可访问范围由学校网站的权限决定。若课程文件列表不可用，会尝试单元中的文件，并在报告中标明扫描可能不完整。
+具体作业和文件的可访问范围由学校网站的权限决定。若课程文件列表不可用，会尝试单元中的文件，并在报告中标明扫描可能不完整。
 
 ## 直接运行
 
