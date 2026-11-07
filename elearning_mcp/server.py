@@ -53,6 +53,9 @@ def parameter_schema(name):
 
 
 def create_server(data_dir, legacy_dir=None, user_id="local-default", *, hosted_connector=False, dsh_credentials=False):
+    if dsh_credentials:
+        from .dsh_credentials import take_environment
+        raw_credentials = take_environment()
     if dsh_credentials and (hosted_connector or legacy_dir):
         raise ValueError('DSH 凭据连接不能与旧托管模式或数据导入混用')
     data_dir = Path(data_dir).expanduser().resolve()
@@ -64,7 +67,7 @@ def create_server(data_dir, legacy_dir=None, user_id="local-default", *, hosted_
     store = None
     if dsh_credentials:
         from .dsh_credentials import DshCredentialStore
-        store = DshCredentialStore.from_environment(data_dir)
+        store = DshCredentialStore.from_raw(data_dir, raw_credentials)
     server = Server("elearning", version=__version__)
 
     @server.list_tools()

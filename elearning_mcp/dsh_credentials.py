@@ -7,6 +7,14 @@ from threading import RLock
 from .store import DEFAULTS, ElearningStore
 
 
+def take_environment():
+    primary = os.environ.pop('ALCOR_ELEARNING_CREDENTIAL', None)
+    legacy = os.environ.pop('STELLA_ELEARNING_CREDENTIAL', None)
+    if primary is not None and legacy is not None and primary != legacy:
+        raise ValueError('凭据环境配置冲突。')
+    return primary if primary is not None else legacy
+
+
 class DshCredentialStore(ElearningStore):
     def __init__(self, root, account):
         super().__init__(root)
@@ -21,7 +29,10 @@ class DshCredentialStore(ElearningStore):
     @classmethod
     def from_environment(cls, root):
         # Remove before launching a browser; the password is never inherited by its children.
-        raw = os.environ.pop('STELLA_ELEARNING_CREDENTIAL', '')
+        return cls.from_raw(root, take_environment())
+
+    @classmethod
+    def from_raw(cls, root, raw):
         try:
             account = json.loads(raw)
         except (ValueError, TypeError):
