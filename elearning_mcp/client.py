@@ -110,7 +110,9 @@ class Canvas:
             raise
         except (SyncError, OSError) as error:
             LOGGER.warning("自动登录失败（%s）", type(error).__name__)
-            raise LoginRequired("自动登录未成功：{}".format(error)) from None
+            if isinstance(error, SyncError):
+                raise
+            raise SyncError("连接失败，请检查网络。", code="network_error") from None
         LOGGER.info("自动登录完成")
 
     def session_data(self):
@@ -178,7 +180,7 @@ class Canvas:
                 if attempt < 3:
                     self.wait(2 ** attempt)
                     continue
-                raise SyncError("连接失败，请检查网络或校园网连接。") from None
+                raise SyncError("连接失败，请检查网络或校园网连接。", code="network_error") from None
 
     def get(self, path, params=None):
         self.check_cancelled()
@@ -258,14 +260,17 @@ def login(config, store, manual=False, cancel_event=None, progress_callback=None
     with sync_playwright() as p:
         stage = "打开登录页面"
         launch_options = {"timeout": 5000} if cancel_event is not None else {}
-        try:
-            browser = p.chromium.launch(channel="chrome", headless=not manual, chromium_sandbox=True, **launch_options)
-        except Exception:
-            check_cancelled()
+        # Use an isolated browser profile; never read the user's everyday cookies.
+        for channel in ("msedge", "chrome", None):
             try:
-                browser = p.chromium.launch(headless=not manual, chromium_sandbox=True, **launch_options)
+                browser = p.chromium.launch(**({"channel": channel} if channel else {}),
+                                            headless=not manual, chromium_sandbox=True, **launch_options)
+                break
             except Exception:
-                raise SyncError("无法打开浏览器，请安装 Chrome，或运行 python -m playwright install chromium。") from None
+                check_cancelled()
+        else:
+            raise SyncError("无法打开浏览器，请安装 Edge、Chrome 或 Playwright Chromium。",
+                            code="browser_unavailable") from None
         try:
             check_cancelled()
             context = browser.new_context()
@@ -287,13 +292,19 @@ def login(config, store, manual=False, cancel_event=None, progress_callback=None
                     check_cancelled()
                     page.locator('#login-password').fill(password, timeout=form_timeout)
                     check_cancelled()
-                    page.get_by_role('button', name='登录', exact=True).click(timeout=form_timeout)
+                    page.get_by_role('button', name=re.compile(r'^\s*(登录|Sign in|Log in|Login)\s*$', re.I)).click(timeout=form_timeout)
                     check_cancelled()
                 except SyncCancelled:
                     raise
+                except PlaywrightError as error:
+                    codes = re.findall(r"net::ERR_[A-Z_]+|ENOTFOUND|ECONNREFUSED|ETIMEDOUT", str(error))
+                    raise SyncError("登录表单未能提交，请检查网络或学校认证页面。",
+                                    code="network_error" if codes else "login_form_error") from None
+                except SyncError:
+                    raise
                 except Exception:
                     if not manual:
-                        raise SyncError("自动登录未成功，请检查学工号、密码和学校认证要求。") from None
+                        raise SyncError("登录表单未能提交，请检查学校认证页面。", code="login_form_error") from None
                 finally:
                     username = password = None
             # The university SSO redirect can finish near the former 90 s
@@ -329,7 +340,7 @@ def login(config, store, manual=False, cancel_event=None, progress_callback=None
                     except SyncError as error:
                         # Agent requests use short, cancellable socket timeouts;
                         # a slow verification must not fail the whole login.
-                        verification_error = str(error)
+                        verification_error = error
                     stage = "等待登录跳转"
                 if cancel_event is None:
                     page.wait_for_timeout(1500)
@@ -342,8 +353,8 @@ def login(config, store, manual=False, cancel_event=None, progress_callback=None
                         check_cancelled()
             if verification_error:
                 raise SyncError("等待登录状态验证超时（{}），未保存 Cookie。请检查账号密码和网络后重试。".format(
-                    verification_error))
-            raise SyncError("等待登录跳转超时，未保存 Cookie。请检查已保存的账号密码和网络后重试。")
+                    verification_error), code=verification_error.code)
+            raise SyncError("等待登录跳转超时，可能需要完成学校额外认证。", code="login_timeout")
         except SyncError:
             raise
         except PlaywrightError as error:
@@ -351,7 +362,8 @@ def login(config, store, manual=False, cancel_event=None, progress_callback=None
             # Report useful categories without exposing SSO tickets or credentials in raw browser errors.
             codes = re.findall(r"net::ERR_[A-Z_]+|ENOTFOUND|ECONNREFUSED|ETIMEDOUT", str(error))
             detail = "（{}）".format(codes[0]) if codes else ""
-            raise SyncError("{}失败{}，登录状态尚未保存，请检查网络后重试。".format(stage, detail)) from None
+            raise SyncError("{}失败{}，登录状态尚未保存，请检查网络后重试。".format(stage, detail),
+                            code="network_error" if codes else "query_failed") from None
         except Exception:
             check_cancelled()
             raise SyncError("{}失败，登录状态尚未保存，请重试。".format(stage)) from None

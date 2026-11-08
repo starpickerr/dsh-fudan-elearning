@@ -2,11 +2,16 @@
 
 
 class SyncError(Exception):
-    pass
+    code = "query_failed"
+
+    def __init__(self, message, *, code=None):
+        super().__init__(message)
+        if code is not None:
+            self.code = code
 
 
 class LoginRequired(SyncError):
-    pass
+    code = "login_required"
 
 
 class SyncCancelled(SyncError):
