@@ -79,3 +79,31 @@ class DshWireTest(unittest.IsolatedAsyncioTestCase):
                     rejected = await session.call_tool('save_settings', {'payload': {'password': 'never-persist'}})
                     self.assertTrue(rejected.isError)
             self.assertFalse((Path(folder) / 'elearning.json').exists())
+
+    async def test_failures_keep_categories_and_hide_secrets_on_wire(self):
+        root = Path(__file__).resolve().parents[1]
+        bootstrap = '''
+import asyncio
+from unittest.mock import patch
+from elearning_mcp.errors import SyncError
+from elearning_mcp.server import main
+failures = iter([SyncError('synthetic-secret', code=code) for code in
+            ['browser_unavailable', 'network_error', 'login_form_error', 'login_timeout']])
+def courses(self):
+    raise next(failures)
+with patch('elearning_mcp.server.ElearningService.list_courses', new=courses):
+    asyncio.run(main())
+'''
+        with tempfile.TemporaryDirectory() as folder:
+            parameters = StdioServerParameters(command=sys.executable,
+                args=['-c', bootstrap, '--data-dir', folder, '--dsh-credentials'], cwd=str(root),
+                env={'HOME': folder, 'STELLA_ELEARNING_CREDENTIAL': json.dumps(ACCOUNT), 'PYTHONDONTWRITEBYTECODE': '1'})
+            async with stdio_client(parameters) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await asyncio.wait_for(session.initialize(), timeout=10)
+                    for code in ['browser_unavailable', 'network_error', 'login_form_error', 'login_timeout']:
+                        result = await session.call_tool('list_courses', {})
+                        self.assertTrue(result.isError)
+                        self.assertTrue(result.content[0].text.startswith('{'), result.content[0].text)
+                        self.assertEqual(json.loads(result.content[0].text)['error_code'], code)
+                        self.assertNotIn('synthetic-secret', result.model_dump_json())

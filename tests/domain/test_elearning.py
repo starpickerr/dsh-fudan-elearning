@@ -579,3 +579,60 @@ def test_briefing_source_never_downloads_with_legacy_auto_sync_setting(config_pa
     assert result.errors == []
     assert not list(root.iterdir())
     canvas.open.assert_not_called()
+
+
+def test_login_uses_edge_and_accepts_english_sso_button(config_path):
+    browser = Mock()
+    context = browser.new_context.return_value
+    page = context.new_page.return_value
+    page.url = "https://id.fudan.edu.cn/login"
+    page.is_closed.return_value = False
+    page.wait_for_timeout.side_effect = lambda _: setattr(page, "url", BASE)
+    context.cookies.return_value = []
+    playwright = MagicMock()
+    playwright.__enter__.return_value.chromium.launch.return_value = browser
+    verified = Mock()
+    verified.get.return_value = ({"id": 7}, None)
+    with patch("playwright.sync_api.sync_playwright", return_value=playwright), \
+         patch.object(client, "Canvas", return_value=verified), \
+         patch.object(ElearningStore, "save_session"):
+        client.login(config(), settings.store())
+    assert playwright.__enter__.return_value.chromium.launch.call_args.kwargs["channel"] == "msedge"
+    name = page.get_by_role.call_args.kwargs["name"]
+    for label in ("登录", "Sign in", "Log in", "Login"):
+        assert name.fullmatch(label)
+    browser.close.assert_called_once()
+
+
+def test_login_falls_back_from_edge_to_chrome_then_chromium(config_path):
+    browser = Mock()
+    browser.new_context.return_value.cookies.return_value = []
+    page = browser.new_context.return_value.new_page.return_value
+    page.url = "https://id.fudan.edu.cn/login"
+    page.wait_for_timeout.side_effect = lambda _: setattr(page, "url", BASE)
+    page.is_closed.return_value = False
+    playwright = MagicMock()
+    launch = playwright.__enter__.return_value.chromium.launch
+    launch.side_effect = [RuntimeError('Edge absent'), RuntimeError('Chrome absent'), browser]
+    verified = Mock()
+    verified.get.return_value = ({"id": 7}, None)
+    with patch("playwright.sync_api.sync_playwright", return_value=playwright), \
+         patch.object(client, "Canvas", return_value=verified), \
+         patch.object(ElearningStore, "save_session"):
+        client.login(config(), settings.store())
+    assert [call.kwargs.get('channel') for call in launch.call_args_list] == ['msedge', 'chrome', None]
+
+
+def test_missing_browser_has_distinct_code_and_network_errors_survive_auto_login(config_path):
+    playwright = MagicMock()
+    playwright.__enter__.return_value.chromium.launch.side_effect = RuntimeError('private path')
+    with patch("playwright.sync_api.sync_playwright", return_value=playwright):
+        with pytest.raises(SyncError) as failure:
+            client.login(config(), settings.store())
+    assert failure.value.code == 'browser_unavailable'
+    assert 'private path' not in str(failure.value)
+    with patch.object(client, 'login', side_effect=SyncError('offline', code='network_error')):
+        with pytest.raises(SyncError) as failure:
+            client.Canvas(config(), settings.store())
+    assert failure.value.code == 'network_error'
+    assert not isinstance(failure.value, LoginRequired)

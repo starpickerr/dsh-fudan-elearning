@@ -162,10 +162,21 @@ def create_server(data_dir, legacy_dir=None, user_id="local-default", *, hosted_
             cancel.set()
             if not dsh_credentials:
                 raise
-            from .errors import LoginRequired, SyncError
-            message = ('eLearning 登录未成功，请检查 DSH 中的账号密码和学校认证要求。'
-                       if isinstance(error, (LoginRequired, SyncError)) else 'eLearning 查询未成功，请检查网络和连接配置。')
-            return CallToolResult(isError=True, content=[TextContent(type='text', text=message)])
+            # Only fixed categories cross the process boundary, never raw browser errors or SSO URLs.
+            messages = {
+                'login_required': '学校登录状态无效，请重新登录。',
+                'browser_unavailable': '无法启动登录浏览器，请安装 Edge、Chrome 或 Chromium。',
+                'network_error': '无法连接学校服务，请检查网络或校园网连接。',
+                'login_form_error': '学校登录表单未能提交，请检查认证页面是否变化。',
+                'login_timeout': '学校登录未完成，可能需要验证码或额外认证；尚不能判断密码是否错误。',
+                'permission_denied': 'eLearning 访问被拒绝，请检查访问权限。',
+                'query_failed': 'eLearning 查询未成功，请稍后重试。',
+            }
+            code = 'permission_denied' if isinstance(error, PermissionError) else getattr(error, 'code', 'query_failed')
+            if code not in messages:
+                code = 'query_failed'
+            return CallToolResult(isError=True, content=[TextContent(type='text', text=json.dumps(
+                {'error_code': code, 'message': messages[code]}, ensure_ascii=False))])
         except BaseException:
             cancel.set()
             raise
