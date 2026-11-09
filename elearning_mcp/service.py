@@ -21,6 +21,7 @@ from .file_sync import sync_files as _sync_files
 from .source import ElearningSource
 from .store import ElearningStore, account_id
 from .utils import parse_date
+from . import transfers
 
 
 class ElearningService:
@@ -197,6 +198,30 @@ class ElearningService:
                 "cursors": dict(result.cursors), "errors": list(result.errors)}
 
     # ----- files -------------------------------------------------------
+    def _transfer_context(self, course_id):
+        transfers.numeric_id(course_id)
+        cfg = self._credentialed_settings()
+        self._authorize_courses(cfg, [course_id])
+        return cfg, self._client(cfg)
+
+    def download_file(self, course_id, file_id, destination):
+        transfers.numeric_id(course_id)
+        cfg = self._credentialed_settings()
+        fid = transfers.file_id_from_link(file_id, cfg['base_url'], course_id)
+        self._authorize_courses(cfg, [course_id])
+        return transfers.download_file(self._client(cfg), course_id, fid, destination, self._check_cancelled)
+
+    def get_assignment(self, course_id, assignment_id):
+        transfers.numeric_id(assignment_id)
+        _, client = self._transfer_context(course_id)
+        return transfers.read_assignment(client, course_id, assignment_id)
+
+    def submit_assignment(self, course_id, assignment_id, file_paths, expected_attempt):
+        transfers.numeric_id(assignment_id)
+        _, client = self._transfer_context(course_id)
+        return transfers.submit_assignment(client, self.store, course_id, assignment_id, file_paths,
+                                           expected_attempt, self._check_cancelled)
+
     def _file_rows(self, cfg, params, *, authorized):
         for key in ("course_ids", "file_ids"):
             values = params.get(key) or []

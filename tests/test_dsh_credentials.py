@@ -63,7 +63,7 @@ class DshCredentialTest(unittest.TestCase):
 
 
 class DshWireTest(unittest.IsolatedAsyncioTestCase):
-    async def test_three_readonly_tools_and_forged_write_refusal(self):
+    async def test_query_transfer_tools_and_forged_admin_write_refusal(self):
         root = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as folder:
             parameters = StdioServerParameters(command=sys.executable,
@@ -73,8 +73,10 @@ class DshWireTest(unittest.IsolatedAsyncioTestCase):
                 async with ClientSession(read, write) as session:
                     await asyncio.wait_for(session.initialize(), timeout=10)
                     inventory = await session.list_tools()
-                    self.assertEqual({tool.name for tool in inventory.tools}, {'list_courses', 'fetch', 'list_files'})
-                    self.assertTrue(all(tool.annotations.readOnlyHint for tool in inventory.tools))
+                    self.assertEqual({tool.name for tool in inventory.tools}, {'list_courses', 'fetch', 'list_files', 'download_file', 'get_assignment', 'submit_assignment'})
+                    for tool in inventory.tools:
+                        self.assertEqual(tool.annotations.readOnlyHint, tool.name not in {'download_file', 'submit_assignment'})
+                    self.assertFalse(next(tool for tool in inventory.tools if tool.name == 'download_file').annotations.destructiveHint)
                     self.assertNotIn('synthetic-password', inventory.model_dump_json())
                     rejected = await session.call_tool('save_settings', {'payload': {'password': 'never-persist'}})
                     self.assertTrue(rejected.isError)
@@ -107,3 +109,42 @@ with patch('elearning_mcp.server.ElearningService.list_courses', new=courses):
                         self.assertTrue(result.content[0].text.startswith('{'), result.content[0].text)
                         self.assertEqual(json.loads(result.content[0].text)['error_code'], code)
                         self.assertNotIn('synthetic-secret', result.model_dump_json())
+
+    async def test_download_and_submit_over_real_mcp_transport_with_synthetic_canvas(self):
+        root = Path(__file__).resolve().parents[1]
+        bootstrap = '''
+import asyncio
+from unittest.mock import patch
+from tests.test_assignment_transfers import Canvas
+from elearning_mcp.server import main
+canvas = Canvas()
+with patch('elearning_mcp.service.ensure_login', return_value=canvas):
+    asyncio.run(main())
+'''
+        with tempfile.TemporaryDirectory() as folder:
+            directory = Path(folder).resolve()
+            homework = directory / 'answer.pdf'
+            homework.write_bytes(b'%PDF-homework')
+            destination = directory / 'lecture.pdf'
+            parameters = StdioServerParameters(command=sys.executable,
+                args=['-c', bootstrap, '--data-dir', str(directory / 'data'), '--dsh-credentials'], cwd=str(root),
+                env={'HOME': str(directory), 'ALCOR_ELEARNING_CREDENTIAL': json.dumps(ACCOUNT), 'PYTHONDONTWRITEBYTECODE': '1'})
+            async with stdio_client(parameters) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await asyncio.wait_for(session.initialize(), timeout=10)
+                    downloaded = await session.call_tool('download_file', {'course_id': '42', 'file_id': '10', 'destination': str(destination)})
+                    self.assertFalse(downloaded.isError, downloaded)
+                    self.assertEqual(destination.read_bytes(), b'%PDF-homework')
+                    duplicate = await session.call_tool('download_file', {'course_id': '42', 'file_id': '10', 'destination': str(destination)})
+                    self.assertTrue(duplicate.isError)
+                    self.assertEqual(json.loads(duplicate.content[0].text)['error_code'], 'destination_exists')
+                    details = await session.call_tool('get_assignment', {'course_id': '42', 'assignment_id': '20'})
+                    self.assertEqual(details.structuredContent['value']['submission']['attempt'], 0)
+                    submitted = await session.call_tool('submit_assignment', {'course_id': '42', 'assignment_id': '20',
+                        'file_paths': [str(homework)], 'expected_attempt': 0})
+                    self.assertFalse(submitted.isError, submitted)
+                    self.assertEqual(submitted.structuredContent['value']['status'], 'submitted')
+                    invalid = await session.call_tool('submit_assignment', {'course_id': '42', 'assignment_id': '20',
+                        'file_paths': [str(homework)], 'expected_attempt': -1})
+                    self.assertTrue(invalid.isError)
+            self.assertFalse(any(b'synthetic-password' in path.read_bytes() for path in directory.rglob('*') if path.is_file()))

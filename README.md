@@ -6,7 +6,15 @@ MCP 的安装、账号配置、工具和运行方式见 [MCP.md](MCP.md)。CLI �
 
 ## DSH 凭据模式
 
-服务支持由兼容宿主启动的 `--dsh-credentials` 模式。宿主负责凭据输入和连接管理，服务只开放 `list_courses`、`fetch` 和 `list_files`；此模式不能与 `--hosted-connector` 或 `--legacy-dir` 混用。它不读取旧配置中的密码、Token 或 session 文件，登录 Cookie 保存在进程内存中。账号替换、删除和重启需要由宿主重建连接。此仓库提供服务端模式，宿主插件的安装和兼容性需按所用发行版另行核实。
+服务支持由兼容宿主启动的 `--dsh-credentials` 模式。宿主负责凭据输入和连接管理，服务开放 `list_courses`、`fetch`、`list_files`、`download_file`、`get_assignment` 和 `submit_assignment`；此模式不能与 `--hosted-connector` 或 `--legacy-dir` 混用。它不读取旧配置中的密码、Token 或 session 文件，登录 Cookie 保存在进程内存中。账号替换、删除和重启需要由宿主重建连接。此仓库提供服务端模式，宿主插件的安装和兼容性需按所用发行版另行核实。
+
+## 文件下载与作业提交
+
+`download_file(course_id, file_id, destination)` 接受文件 ID 或课程文件的 eLearning 网页链接，保存到明确指定的本地绝对文件路径，不覆盖已有文件，最大 512 MB。父目录须已存在。
+
+`get_assignment(course_id, assignment_id)` 查询作业提交方式、允许格式、截止时间、锁定状态和自己的提交次数。`submit_assignment(course_id, assignment_id, file_paths, expected_attempt)` 将 1 至 20 个本地普通文件（每个最大 512 MB）上传并正式提交；只支持 Canvas 原生 online_upload。expected_attempt 必须为刚查询的当前次数，未提交为 0；重交须由用户明确要求，新提交可能替换上一轮附件。文件由学校返回的 HTTPS 上传目标接收，不向目标转发 Canvas 密码、Token 或 Cookie。
+
+POST 不自动重试。只有正式回执返回 submitted 才算交作业成功；网络超时或 submission_unknown 时先查询当前次数和附件，避免重复提交。失败可能保留已上传但未提交的文件，不会自动删除远端数据。宿主负责工具调用及本地文件的用户授权，MCP 注解不构成权限控制。
 
 ## CLI 使用
 
