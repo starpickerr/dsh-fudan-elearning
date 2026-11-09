@@ -248,6 +248,7 @@ def test_headless_auto_login_retries_transient_verification_without_connection_t
     page.wait_for_timeout.assert_called()
     event.wait.assert_not_called()
     assert playwright.__enter__.return_value.chromium.launch.call_args.kwargs["headless"] is True
+    page.goto.assert_called_once_with(BASE + "/login", timeout=60000)
     browser.close.assert_called_once()
 
 
@@ -360,7 +361,7 @@ def test_canvas_resources_use_source_items_full_body_and_event_time(config_path)
     assert again.items == []
 
 
-def test_briefing_reads_broad_metadata_progressively_without_downloading(config_path):
+def test_briefing_reads_only_assignments_without_downloading(config_path):
     settings.save_settings(config())
     canvas = FakeCanvas()
     canvas.open = Mock(side_effect=AssertionError("briefing must not download files"))
@@ -374,12 +375,10 @@ def test_briefing_reads_broad_metadata_progressively_without_downloading(config_
     result = source.fetch({"since": "2026-09-08T12:00:00Z", "until": "2026-09-09T00:00:00Z"})
 
     assert result.errors == []
-    assert {item.payload["resource_type"] for item in result.items} == {
-        "announcement", "assignment", "quiz", "grade", "course_grade", "file"}
-    assert previews[0] == {"assignment", "grade"}
+    assert {item.payload["resource_type"] for item in result.items} == {"assignment"}
+    assert previews[0] == {"assignment"}
     assert previews[-1] == {item.payload["resource_type"] for item in result.items}
-    assert {path.rsplit("/", 1)[-1] for path, _ in canvas.calls} >= {
-        "courses", "assignments", "discussion_topics", "quizzes", "files", "enrollments"}
+    assert {path.rsplit("/", 1)[-1] for path, _ in canvas.calls} >= {"courses", "assignments"}
     canvas.open.assert_not_called()
 
 
@@ -636,3 +635,41 @@ def test_missing_browser_has_distinct_code_and_network_errors_survive_auto_login
             client.Canvas(config(), settings.store())
     assert failure.value.code == 'network_error'
     assert not isinstance(failure.value, LoginRequired)
+
+
+def test_briefing_only_reads_one_resource_per_assignment(config_path):
+    canvas = FakeCanvas()
+    canvas.rows['assignments'].append({**canvas.rows['assignments'][0], 'id': 999, 'name': 'Second assignment'})
+    source = ElearningSource(config(), client_factory=lambda _: canvas, briefing_only=True)
+    result = source.fetch({'since': '2026-09-08T12:00:00Z', 'until': '2026-09-09T00:00:00Z'})
+    assert result.errors == []
+    assert len(result.items) == 2
+    assert {row.payload['resource_type'] for row in result.items} == {'assignment'}
+    assert len({row.payload['entity_id'] for row in result.items}) == 2
+    assert not any(any(kind in path for kind in ('discussion_topics', 'quizzes', 'files', 'enrollments')) for path, _ in canvas.calls)
+
+
+def test_isolated_login_uses_system_https_proxy(config_path):
+    browser = Mock()
+    browser.new_context.return_value.cookies.return_value = []
+    page = browser.new_context.return_value.new_page.return_value
+    page.url = 'https://id.fudan.edu.cn/login'
+    page.is_closed.return_value = False
+    page.wait_for_timeout.side_effect = lambda _: setattr(page, 'url', BASE)
+    playwright = MagicMock()
+    playwright.__enter__.return_value.chromium.launch.return_value = browser
+    verified = Mock()
+    verified.get.return_value = ({'id': 7}, None)
+    for bypass in (False, True):
+        page.url = 'https://id.fudan.edu.cn/login'
+        with patch('playwright.sync_api.sync_playwright', return_value=playwright), \
+             patch.object(client.urllib.request, 'getproxies', return_value={'https':'http://127.0.0.1:12345'}), \
+             patch.object(client.urllib.request, 'proxy_bypass', return_value=bypass), \
+             patch.object(client, 'Canvas', return_value=verified), \
+             patch.object(ElearningStore, 'save_session'):
+            client.login(config(), settings.store())
+        options = playwright.__enter__.return_value.chromium.launch.call_args.kwargs
+        if bypass:
+            assert 'proxy' not in options
+        else:
+            assert options['proxy'] == {'server':'http://127.0.0.1:12345'}
