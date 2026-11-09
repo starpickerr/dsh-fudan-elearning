@@ -134,14 +134,14 @@ class ElearningSource:
                     document = assignment_document(client, course, raw, observed)
                     add(course, "assignment", raw, raw.get("name") or "作业", document["text"], page,
                         actionable=not document["submitted"])
-                if not self.briefing_only and raw.get("submission") and ((raw["submission"].get("graded_at")) or raw["submission"].get("submission_comments")):
+                if raw.get("submission") and ((raw["submission"].get("graded_at")) or raw["submission"].get("submission_comments")):
                     document = grade(client, course, raw)
                     add(course, "grade", raw, document.title + " · 评分", document.text, document.url)
             logger.info("[eLearning] assignments read course=%s count=%d", course["id"], len(assignments))
             if self.on_items_ready is not None:
                 self.on_items_ready(list(items))
 
-        for course in ([] if self.briefing_only else courses):
+        for course in courses:
             self._check_cancelled()
             for raw in read(course, "discussion_topics", {"only_announcements": "true"}):
                 self._check_cancelled()
