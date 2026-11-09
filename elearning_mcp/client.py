@@ -260,6 +260,9 @@ def login(config, store, manual=False, cancel_event=None, progress_callback=None
     with sync_playwright() as p:
         stage = "打开登录页面"
         launch_options = {"timeout": 5000} if cancel_event is not None else {}
+        proxy = urllib.request.getproxies().get("https")
+        if proxy and not urllib.request.proxy_bypass(host):
+            launch_options["proxy"] = {"server": proxy}
         # Use an isolated browser profile; never read the user's everyday cookies.
         for channel in ("msedge", "chrome", None):
             try:
@@ -277,7 +280,7 @@ def login(config, store, manual=False, cancel_event=None, progress_callback=None
             if context_setup is not None:
                 context_setup(context)
             page = context.new_page()
-            page.goto(base + "/login", timeout=5000 if cancel_event is not None else 60000)
+            page.goto(base + "/login", timeout=60000)
             check_cancelled()
             if not manual:
                 # Form selectors verified on Fudan's public SSO page.
