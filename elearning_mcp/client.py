@@ -1,10 +1,14 @@
 """Canvas API、网络请求与浏览器登录。"""
 import http.cookiejar
+import http.client
+import ipaddress
 import json
 import logging
 import os
 import re
 import sys
+import socket
+import mimetypes
 import time
 import urllib.error
 import urllib.parse
@@ -14,6 +18,27 @@ from .errors import LoginRequired, SyncCancelled, SyncError
 from .utils import next_link
 
 LOGGER = logging.getLogger("stella.elearning")
+
+
+def transfer_url(url, origin):
+    parsed = urllib.parse.urlparse(url)
+    if (parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password
+            or parsed.fragment or parsed.port not in (None, 443)):
+        raise SyncError('文件传输地址无效。', code='invalid_file')
+    if parsed.netloc == origin:
+        return url
+    try:
+        addresses = socket.getaddrinfo(parsed.hostname, 443, type=socket.SOCK_STREAM)
+    except OSError:
+        raise SyncError('无法解析文件服务器地址。', code='network_error') from None
+    if not addresses or any(not ipaddress.ip_address(row[4][0]).is_global for row in addresses):
+        raise SyncError('文件服务器不能位于本机或私有网络。', code='permission_denied')
+    return url
+
+
+class NoWriteRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
 
 
 def _apply_browsers_path_env():
@@ -30,8 +55,10 @@ class SafeRedirect(urllib.request.HTTPRedirectHandler):
         redirect = super().redirect_request(req, fp, code, msg, headers, newurl)
         # Never forward authentication headers to another host.
         if urllib.parse.urlparse(req.full_url).netloc != urllib.parse.urlparse(newurl).netloc:
-            for header in ("Authorization", "Cookie"):
-                redirect.remove_header(header)
+            transfer_url(newurl, urllib.parse.urlparse(req.full_url).netloc)
+            for header, _ in redirect.header_items():
+                if header.lower() in ('authorization', 'cookie', 'x-csrf-token'):
+                    redirect.remove_header(header)
         return redirect
 
 
@@ -143,6 +170,8 @@ class Canvas:
             raise SyncError("只允许 HTTPS 请求。")
         if api and parsed.netloc != self.origin:
             raise SyncError("接口分页地址不属于 elearning，已停止请求。")
+        if not api and self.opener_factory is None:
+            transfer_url(url, self.origin)
         headers = {"User-Agent": "FudanCourseSync/1.0", "Accept": "application/json" if api else "*/*"}
         if self.token and parsed.netloc == self.origin:
             headers["Authorization"] = "Bearer " + self.token
@@ -193,6 +222,95 @@ class Canvas:
                 raise SyncError("接口数据格式不正确。") from None
             self.check_cancelled()
             return data, next_link(response.headers.get("Link"))
+
+    def post(self, path, fields):
+        """Authenticated writes are never retried, including after ambiguous failures."""
+        self.check_cancelled()
+        url = urllib.parse.urljoin(self.base + '/', path)
+        if urllib.parse.urlparse(url).netloc != self.origin or urllib.parse.urlparse(url).scheme != 'https':
+            raise SyncError('写入接口不属于 eLearning。', code='permission_denied')
+        headers = {'Accept': 'application/json', 'Content-Type': 'application/x-www-form-urlencoded'}
+        if self.token:
+            headers['Authorization'] = 'Bearer ' + self.token
+        else:
+            csrf = next((cookie.value for cookie in self.cookie_jar
+                         if cookie.name == '_csrf_token' and cookie_matches_host(cookie.domain, urllib.parse.urlparse(self.base).hostname)), None)
+            if not csrf:
+                raise LoginRequired('当前登录缺少 CSRF 状态，请重新登录。')
+            headers['X-CSRF-Token'] = urllib.parse.unquote(csrf)
+        opener = urllib.request.build_opener(NoWriteRedirect(), urllib.request.HTTPCookieProcessor(self.cookie_jar))
+        request = urllib.request.Request(url, data=urllib.parse.urlencode(fields, doseq=True).encode(), headers=headers, method='POST')
+        try:
+            with opener.open(request, timeout=60) as response:
+                if 'json' not in response.headers.get('Content-Type', '').lower():
+                    raise ValueError('not json')
+                return json.load(response)
+        except urllib.error.HTTPError as error:
+            code = error.code
+            error.close()
+            if code == 401:
+                raise LoginRequired('学校登录已失效。') from None
+            if 400 <= code < 500:
+                raise SyncError('学校拒绝了写入请求。', code='submission_rejected') from None
+            raise SyncError('写入结果尚不能确认，请查询状态。', code='submission_unknown') from None
+        except (OSError, ValueError, http.client.HTTPException):
+            raise SyncError('写入结果尚不能确认，请查询状态。', code='submission_unknown') from None
+
+    def upload_file(self, path, stream, filename, size):
+        content_type = mimetypes.guess_type(filename)[0] or 'application/octet-stream'
+        initialized = self.post(path, {'name': filename, 'size': size, 'content_type': content_type, 'on_duplicate': 'rename'})
+        if not isinstance(initialized, dict) or not isinstance(initialized.get('upload_params'), dict):
+            raise SyncError('服务器未返回上传参数。', code='upload_failed')
+        url = transfer_url(initialized.get('upload_url', ''), self.origin)
+        boundary = 'alcor-' + os.urandom(16).hex()
+        parts = []
+        for name, value in initialized['upload_params'].items():
+            if not isinstance(name, str) or not isinstance(value, (str, int, float)) or any(char in name for char in '\r\n"'):
+                raise SyncError('上传参数无效。', code='upload_failed')
+            parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode())
+        safe_name = filename.replace('"', '%22').replace('\r', '%0D').replace('\n', '%0A').replace('\\', '%5C')
+        parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{safe_name}"\r\nContent-Type: {content_type}\r\n\r\n'.encode())
+        prefix, suffix = b''.join(parts), f'\r\n--{boundary}--\r\n'.encode()
+
+        def body():
+            yield prefix
+            remaining = size
+            while remaining:
+                self.check_cancelled()
+                block = stream.read(min(128 * 1024, remaining))
+                if not block:
+                    raise SyncError('文件在上传期间发生变化。', code='invalid_file')
+                remaining -= len(block)
+                yield block
+            yield suffix
+
+        # Signed upload targets receive only their opaque parameters, never Canvas cookies or tokens.
+        opener = urllib.request.build_opener(NoWriteRedirect())
+        request = urllib.request.Request(url, data=body(), headers={
+            'Content-Type': 'multipart/form-data; boundary=' + boundary,
+            'Content-Length': str(len(prefix) + size + len(suffix))}, method='POST')
+        self.check_cancelled()
+        try:
+            try:
+                response = opener.open(request, timeout=60)
+            except urllib.error.HTTPError as error:
+                if error.code not in (301, 302, 303, 307, 308):
+                    raise
+                response = error
+            with response:
+                location = response.headers.get('Location')
+                if location:
+                    confirmation = urllib.parse.urljoin(url, location)
+                    parsed = urllib.parse.urlparse(confirmation)
+                    if parsed.netloc != self.origin or parsed.scheme != 'https' or not re.fullmatch(
+                            r'/(?:api/v1/)?files/[1-9][0-9]*(?:/create_success)?', parsed.path):
+                        raise SyncError('文件上传确认地址无效。', code='upload_failed')
+                    return self.get(confirmation)[0]
+                if response.status != 201 or 'json' not in response.headers.get('Content-Type', '').lower():
+                    raise SyncError('未能确认文件上传成功。', code='upload_failed')
+                return json.load(response)
+        except (OSError, ValueError, http.client.HTTPException):
+            raise SyncError('文件上传未完成或结果未知，未提交作业。', code='upload_failed') from None
 
     def list(self, path, params=None):
         params = dict(params or {}, per_page=100)

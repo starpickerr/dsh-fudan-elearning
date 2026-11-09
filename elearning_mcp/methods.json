@@ -82,5 +82,30 @@
       "offset",
       "limit"
     ]
+  },
+  "download_file": {
+    "read_only": false,
+    "destructive": false,
+    "params": [
+      "course_id",
+      "file_id",
+      "destination"
+    ]
+  },
+  "get_assignment": {
+    "read_only": true,
+    "params": [
+      "course_id",
+      "assignment_id"
+    ]
+  },
+  "submit_assignment": {
+    "read_only": false,
+    "params": [
+      "course_id",
+      "assignment_id",
+      "file_paths",
+      "expected_attempt"
+    ]
   }
 }

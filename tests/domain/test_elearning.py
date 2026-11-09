@@ -361,7 +361,7 @@ def test_canvas_resources_use_source_items_full_body_and_event_time(config_path)
     assert again.items == []
 
 
-def test_briefing_reads_only_assignments_without_downloading(config_path):
+def test_briefing_reads_all_resource_types_for_rules_without_downloading(config_path):
     settings.save_settings(config())
     canvas = FakeCanvas()
     canvas.open = Mock(side_effect=AssertionError("briefing must not download files"))
@@ -375,8 +375,8 @@ def test_briefing_reads_only_assignments_without_downloading(config_path):
     result = source.fetch({"since": "2026-09-08T12:00:00Z", "until": "2026-09-09T00:00:00Z"})
 
     assert result.errors == []
-    assert {item.payload["resource_type"] for item in result.items} == {"assignment"}
-    assert previews[0] == {"assignment"}
+    assert {item.payload["resource_type"] for item in result.items} == {"announcement", "assignment", "quiz", "grade", "course_grade", "file"}
+    assert previews[0] == {"assignment", "grade"}
     assert previews[-1] == {item.payload["resource_type"] for item in result.items}
     assert {path.rsplit("/", 1)[-1] for path, _ in canvas.calls} >= {"courses", "assignments"}
     canvas.open.assert_not_called()
@@ -643,10 +643,10 @@ def test_briefing_only_reads_one_resource_per_assignment(config_path):
     source = ElearningSource(config(), client_factory=lambda _: canvas, briefing_only=True)
     result = source.fetch({'since': '2026-09-08T12:00:00Z', 'until': '2026-09-09T00:00:00Z'})
     assert result.errors == []
-    assert len(result.items) == 2
-    assert {row.payload['resource_type'] for row in result.items} == {'assignment'}
-    assert len({row.payload['entity_id'] for row in result.items}) == 2
-    assert not any(any(kind in path for kind in ('discussion_topics', 'quizzes', 'files', 'enrollments')) for path, _ in canvas.calls)
+    assignments = [row for row in result.items if row.payload['resource_type'] == 'assignment']
+    assert len(assignments) == 2
+    assert len({row.payload['entity_id'] for row in assignments}) == 2
+    assert {'announcement','file'} <= {row.payload['resource_type'] for row in result.items}
 
 
 def test_isolated_login_uses_system_https_proxy(config_path):

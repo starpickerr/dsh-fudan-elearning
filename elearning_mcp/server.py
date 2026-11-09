@@ -25,16 +25,24 @@ DESCRIPTIONS = {
     "fetch": "读取课程公告、作业、测验、成绩和文件元数据；since/until 为时间窗口，offset/limit 分页。",
     "list_files": "查询已选课程文件；可按课程、文件 ID 和扩展名筛选，不下载文件。",
     "sync_files": "下载已选课程课件到配置目录。保留本地文件；支持 managed/courseware 布局、筛选和重复同步。",
+    "download_file": "下载课程文件到 destination 指定的本地绝对路径，不覆盖已有文件。file_id 接受文件 ID 或该课程的 eLearning 文件网页链接；最大 512 MB。",
+    "get_assignment": "读取课程作业的要求、截止时间、文件格式、允许提交次数及自己的当前提交状态和 attempt；未提交为 0。",
+    "submit_assignment": "将 file_paths 中 1 至 20 个本地普通文件上传并正式提交作业，仅支持 online_upload。expected_attempt 必须等于 get_assignment 返回的当前次数；重交前取得用户授权。会影响真实作业，写请求不自动重试；结果未知先查询状态。",
     "list_accounts": "查询已配置邮箱及其账号 ID；不返回密码。",
     "list_sources": "查询已启用的邮件简报来源。",
     "fetch_messages": "只读获取指定邮箱的邮件及建议游标；消费成功后才能提交游标，不自动标为已读。",
 }
 
 TOOL_TITLES = {'fetch': '获取课程数据', 'list_courses': '查询课程',
-               'list_files': '查询文件', 'sync_files': '同步课件'}
+               'list_files': '查询文件', 'sync_files': '同步课件', 'download_file': '下载课程文件',
+               'get_assignment': '查看作业提交要求', 'submit_assignment': '上传并提交作业'}
 
 
 def parameter_schema(name):
+    if name == 'expected_attempt':
+        return {'type': 'integer', 'minimum': 0}
+    if name == 'file_paths':
+        return {'type': 'array', 'items': {'type': 'string', 'minLength': 1}, 'minItems': 1, 'maxItems': 20, 'uniqueItems': True}
     if name in {"payload", "cursors"}:
         return {"type": "object"}
     if name in {"course_ids", "file_ids", "file_extensions"}:
@@ -63,7 +71,7 @@ def create_server(data_dir, legacy_dir=None, user_id="local-default", *, hosted_
         data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     methods = json.loads(Path(__file__).with_name("methods.json").read_text())
     if dsh_credentials:
-        methods = {name: methods[name] for name in ('list_courses', 'fetch', 'list_files')}
+        methods = {name: methods[name] for name in ('list_courses', 'fetch', 'list_files', 'download_file', 'get_assignment', 'submit_assignment')}
     store = None
     if dsh_credentials:
         from .dsh_credentials import DshCredentialStore
@@ -93,7 +101,7 @@ def create_server(data_dir, legacy_dir=None, user_id="local-default", *, hosted_
                 },
                 annotations=ToolAnnotations(
                     readOnlyHint=spec["read_only"],
-                    destructiveHint=not spec["read_only"],
+                    destructiveHint=spec.get('destructive', not spec['read_only']),
                 ),
             )
             for name, spec in methods.items()
@@ -171,8 +179,19 @@ def create_server(data_dir, legacy_dir=None, user_id="local-default", *, hosted_
                 'login_timeout': '学校登录未完成，可能需要验证码或额外认证；尚不能判断密码是否错误。',
                 'permission_denied': 'eLearning 访问被拒绝，请检查访问权限。',
                 'query_failed': 'eLearning 查询未成功，请稍后重试。',
+                'invalid_arguments': '文件路径、课程、文件或作业参数无效，请核对后重试。',
+                'destination_exists': '目标文件已存在，请选择新的文件名；已有文件未被覆盖。',
+                'invalid_file': '文件不可读取、格式或大小不符要求，或在上传期间发生变化。请检查普通文件、作业格式和 512 MB 大小限制。',
+                'download_failed': '下载未完成或文件大小校验失败，未保存目标文件。',
+                'assignment_unavailable': '作业尚未开放、已经锁定或允许的提交次数已用完。',
+                'unsupported_submission': '此作业不支持 Canvas 文件上传，请使用其指定的提交方式。',
+                'attempt_conflict': '作业提交次数已经变化；请重新查询状态并决定是否重交，本次未提交。',
+                'upload_failed': '文件上传未完成或结果无法确认，本次未提交作业；部分文件可能已上传。',
+                'submission_rejected': '学校拒绝了写入请求，请检查作业状态和提交要求；部分文件可能已上传。',
+                'submission_unknown': '写入请求已发送，但结果无法确认；请先查询作业状态，勿直接重试；部分文件可能已上传。',
             }
-            code = 'permission_denied' if isinstance(error, PermissionError) else getattr(error, 'code', 'query_failed')
+            code = ('permission_denied' if isinstance(error, PermissionError) else
+                    'invalid_arguments' if isinstance(error, ValueError) else getattr(error, 'code', 'query_failed'))
             if code not in messages:
                 code = 'query_failed'
             return CallToolResult(isError=True, content=[TextContent(type='text', text=json.dumps(
@@ -190,7 +209,7 @@ async def main():
     parser.add_argument("--legacy-dir", type=Path)
     parser.add_argument("--user-id", default="local-default")
     parser.add_argument('--hosted-connector', action='store_true')
-    parser.add_argument('--dsh-credentials', action='store_true', help='由 DSH 提供凭据，仅在内存中保存登录状态并开放三项查询')
+    parser.add_argument('--dsh-credentials', action='store_true', help='由 DSH 提供凭据，仅在内存中保存登录状态，提供查询、下载与作业文件提交')
     args = parser.parse_args()
     server = create_server(args.data_dir, args.legacy_dir, args.user_id, hosted_connector=args.hosted_connector, dsh_credentials=args.dsh_credentials)
     async with stdio_server() as (read, write):
