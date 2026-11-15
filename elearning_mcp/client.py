@@ -8,6 +8,7 @@ import os
 import re
 import sys
 import socket
+import ssl
 import mimetypes
 import time
 import urllib.error
@@ -30,9 +31,12 @@ def transfer_url(url, origin):
     try:
         addresses = socket.getaddrinfo(parsed.hostname, 443, type=socket.SOCK_STREAM)
     except OSError:
-        raise SyncError('无法解析文件服务器地址。', code='network_error') from None
+        raise SyncError('无法解析文件服务器地址。', code='network_dns_error') from None
+    if any(ipaddress.ip_address(row[4][0]) in ipaddress.ip_network('198.18.0.0/15') for row in addresses
+           if ipaddress.ip_address(row[4][0]).version == 4):
+        raise SyncError('下载域名被解析到代理 Fake-IP 地址，请为该域名启用真实 DNS 解析。', code='proxy_dns_fake_ip')
     if not addresses or any(not ipaddress.ip_address(row[4][0]).is_global for row in addresses):
-        raise SyncError('文件服务器不能位于本机或私有网络。', code='permission_denied')
+        raise SyncError('文件服务器不能位于本机或私有网络。', code='file_server_blocked')
     return url
 
 
@@ -202,14 +206,20 @@ class Canvas:
                 if code in (429, 500, 502, 503, 504) and attempt < 3:
                     self.wait(min(int(retry), 30) if retry.isdigit() else 2 ** attempt)
                     continue
-                raise SyncError("网站返回 HTTP {}。".format(code)) from None
+                category = ('school_access_denied' if code == 403 else
+                            'school_file_unavailable' if code == 404 else 'school_http_error')
+                raise SyncError("网站返回 HTTP {}。".format(code), code=category) from None
             except PermissionError:
-                raise
-            except (urllib.error.URLError, TimeoutError, OSError):
+                raise SyncError("系统拒绝了学校网络连接。", code='network_permission_denied') from None
+            except (urllib.error.URLError, TimeoutError, OSError) as error:
                 if attempt < 3:
                     self.wait(2 ** attempt)
                     continue
-                raise SyncError("连接失败，请检查网络或校园网连接。", code="network_error") from None
+                reason = getattr(error, 'reason', error)
+                category = ('network_dns_error' if isinstance(reason, socket.gaierror) else
+                            'network_tls_error' if isinstance(reason, ssl.SSLError) else
+                            'network_timeout' if isinstance(reason, TimeoutError) else 'network_error')
+                raise SyncError("连接失败，请检查网络或校园网连接。", code=category) from None
 
     def get(self, path, params=None):
         self.check_cancelled()

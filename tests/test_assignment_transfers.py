@@ -82,6 +82,20 @@ class TransferTest(unittest.TestCase):
             self.service.download_file('42', '10', str(destination))
         self.assertEqual(self.homework.read_bytes(), b'%PDF-homework')
 
+    def test_download_distinguishes_local_write_and_school_file_failures(self):
+        with self.assertRaises(SyncError) as error:
+            self.service.download_file('42', '10', str(self.root / 'missing' / 'lecture.pdf'))
+        self.assertEqual(error.exception.code, 'local_file_error')
+        with patch('elearning_mcp.transfers._download', side_effect=PermissionError('private-path')):
+            with self.assertRaises(SyncError) as error:
+                self.service.download_file('42', '10', str(self.root / 'lecture.pdf'))
+            self.assertEqual(error.exception.code, 'local_file_error')
+        self.canvas.file['locked_for_user'] = True
+        with self.assertRaises(SyncError) as error:
+            self.service.download_file('42', '10', str(self.root / 'lecture.pdf'))
+        self.assertEqual(error.exception.code, 'school_file_unavailable')
+        self.assertFalse((self.root / 'lecture.pdf').exists())
+
     def test_outside_course_scope_or_link_never_reads_file(self):
         self.service.authorized_resources = []
         self.service.user_id = 'user'

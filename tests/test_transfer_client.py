@@ -1,6 +1,8 @@
 import http.cookiejar
 import io
 import json
+import socket
+import ssl
 import unittest
 from unittest.mock import Mock, patch
 import urllib.error
@@ -99,6 +101,35 @@ class ClientTest(unittest.TestCase):
         self.assertFalse(any(key.lower() in ('authorization', 'cookie', 'x-csrf-token') for key, _ in redirected.header_items()))
         with patch('socket.getaddrinfo', return_value=[(2, 1, 6, '', ('10.0.0.1', 443))]), self.assertRaises(SyncError):
             SafeRedirect().redirect_request(request, None, 302, '', {}, 'https://private.example.com/file')
+
+    def test_transfer_dns_distinguishes_proxy_fake_ip_from_private_targets(self):
+        for address, code in [('198.18.0.25', 'proxy_dns_fake_ip'),
+                              ('198.19.255.254', 'proxy_dns_fake_ip'),
+                              ('127.0.0.1', 'file_server_blocked'),
+                              ('10.0.0.1', 'file_server_blocked')]:
+            with self.subTest(address=address), patch('socket.getaddrinfo',
+                    return_value=[(2, 1, 6, '', (address, 443))]):
+                with self.assertRaises(SyncError) as error:
+                    transfer_url('https://files.example.com/file?token=secret', self.client.origin)
+                self.assertEqual(error.exception.code, code)
+        with patch('socket.getaddrinfo', side_effect=socket.gaierror()):
+            with self.assertRaises(SyncError) as error:
+                transfer_url('https://files.example.com/file', self.client.origin)
+            self.assertEqual(error.exception.code, 'network_dns_error')
+
+    def test_read_failures_report_network_or_school_category(self):
+        failures = [(urllib.error.URLError(socket.gaierror()), 'network_dns_error'),
+                    (urllib.error.URLError(ssl.SSLError()), 'network_tls_error'),
+                    (urllib.error.URLError(TimeoutError()), 'network_timeout'),
+                    (PermissionError(), 'network_permission_denied'),
+                    (urllib.error.HTTPError(BASE, 403, 'secret', {}, None), 'school_access_denied'),
+                    (urllib.error.HTTPError(BASE, 404, 'secret', {}, None), 'school_file_unavailable')]
+        for failure, code in failures:
+            with self.subTest(code=code), patch.object(self.client.opener, 'open', side_effect=failure), \
+                    patch.object(self.client, 'wait'):
+                with self.assertRaises(SyncError) as error:
+                    self.client.open('/api/v1/files/10')
+                self.assertEqual(error.exception.code, code)
 
 
 if __name__ == '__main__':

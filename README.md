@@ -234,3 +234,9 @@ python -m unittest discover -s tests -v
 ## MCP Server
 
 Local stdio MCP entry and existing-state compatibility: [MCP.md](MCP.md). The original CLI remains available.
+
+## 错误诊断
+
+DSH 凭据模式的失败回执保留 `error_code` 和安全的 `message`，区分网络 DNS/TLS/超时、代理 Fake-IP、非公网下载地址、本地路径、学校 HTTP 拒绝、不可用文件及实际资源权限。只输出固定提示，不回传原始异常、认证 URL 或凭据。下载地址与路径安全检查仍生效，下载不增加审批步骤；插件错误不能据此解释为宿主审批被拒绝。
+
+`proxy_dns_fake_ip` 表示文件域名解析到 `198.18.0.0/15`；应修复代理 DNS 使该域名返回真实公网地址，而不是放行私网地址或更改审批策略。已有文件不覆盖，写入结果不确定时先核对回执，不能先删旧文件或盲目重复提交。

@@ -106,7 +106,7 @@ def _open_directory(path):
     except OSError as exc:
         if descriptor is not None:
             os.close(descriptor)
-        raise SyncError("课程文件保存目录不可访问、权限不足或已移动，请检查目录及系统访问权限") from exc
+        raise SyncError("课程文件保存目录不可访问、权限不足或已移动，请检查目录及系统访问权限", code='local_file_error') from exc
 
 
 def _check_directory(path, descriptor):
@@ -114,7 +114,7 @@ def _check_directory(path, descriptor):
     try:
         actual, expected = os.fstat(current), os.fstat(descriptor)
         if (actual.st_dev, actual.st_ino) != (expected.st_dev, expected.st_ino):
-            raise SyncError("课程文件保存目录已移动，请重新选择目录")
+            raise SyncError("课程文件保存目录已移动，请重新选择目录", code='local_file_error')
     finally:
         os.close(current)
 
@@ -174,10 +174,10 @@ def _download(client, url, directory_fd, cancel_event=None):
     # including explicitly configured local services. Standalone keeps its guard.
     if getattr(client, 'opener_factory', None) is None:
         if host == "localhost" or host.endswith(".localhost"):
-            raise SyncError("课程文件下载地址不能指向本机")
+            raise SyncError("课程文件下载地址不能指向本机", code='file_server_blocked')
         try:
             if ipaddress.ip_address(host).is_private:
-                raise SyncError("课程文件下载地址不能指向私有网络")
+                raise SyncError("课程文件下载地址不能指向私有网络", code='file_server_blocked')
         except ValueError:
             pass
     for attempt in range(3):
@@ -185,7 +185,7 @@ def _download(client, url, directory_fd, cancel_event=None):
             return _download_once(client, url, directory_fd, cancel_event)
         except _TruncatedDownload as exc:
             if attempt == 2:
-                raise SyncError("课程文件传输中断，已重试 3 次；下次同步会继续尝试") from exc
+                raise SyncError("课程文件传输中断，已重试 3 次；下次同步会继续尝试", code='download_failed') from exc
             _wait(cancel_event, 2 ** attempt)
 
 
