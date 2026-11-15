@@ -185,7 +185,7 @@ def _download(client, url, directory_fd, cancel_event=None):
             return _download_once(client, url, directory_fd, cancel_event)
         except _TruncatedDownload as exc:
             if attempt == 2:
-                raise SyncError("课程文件传输中断，已重试 3 次；下次同步会继续尝试", code='download_failed') from exc
+                raise SyncError("课程文件传输中断，已重试 3 次；下次同步会继续尝试", code='download_incomplete') from exc
             _wait(cancel_event, 2 ** attempt)
 
 

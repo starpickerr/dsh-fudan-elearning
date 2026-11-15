@@ -6,7 +6,7 @@ import re
 import stat
 from urllib.parse import urlparse
 
-from .errors import SyncError
+from .errors import DownloadSizeMismatch, SyncError
 from .file_sync import _download, _open_directory, _check_directory, _MAX_FILE_SIZE
 from .locking import state_lock
 
@@ -54,8 +54,9 @@ def download_file(client, course_id, file_id, destination, check_cancelled):
         if not isinstance(expected, int) or isinstance(expected, bool) or not 0 <= expected <= _MAX_FILE_SIZE:
             raise SyncError("文件大小无效或超过 512 MB。", code='invalid_file')
         temporary, digest = _download(client, raw['url'], directory, client.cancel_event if hasattr(client, 'cancel_event') else None)
-        if os.stat(temporary, dir_fd=directory, follow_symlinks=False).st_size != expected:
-            raise SyncError("下载文件大小与服务器不符，未保存。", code='download_failed')
+        actual = os.stat(temporary, dir_fd=directory, follow_symlinks=False).st_size
+        if actual != expected:
+            raise DownloadSizeMismatch(expected, actual)
         check_cancelled()
         _check_directory(path.parent, directory)
         try:

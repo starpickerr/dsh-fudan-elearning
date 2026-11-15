@@ -15,6 +15,7 @@ from mcp.server.stdio import stdio_server
 from mcp.types import CallToolResult, TextContent, Tool, ToolAnnotations, Request, Result
 from . import __version__
 from .service import ElearningService
+from .errors import DownloadSizeMismatch
 
 
 class HostedRequest(Request):
@@ -195,6 +196,8 @@ def create_server(data_dir, legacy_dir=None, user_id="local-default", *, hosted_
                 'destination_exists': '目标文件已存在，请选择新的文件名；已有文件未被覆盖。',
                 'invalid_file': '文件不可读取、格式或大小不符要求，或在上传期间发生变化。请检查普通文件、作业格式和 512 MB 大小限制。',
                 'download_failed': '下载未完成或文件大小校验失败，未保存目标文件。',
+                'download_incomplete': '接收文件内容时连接中断、超时或长度不足，内部重试已用完，未保存目标文件。请检查网络和代理后再试；此错误不能证明服务器文件损坏。',
+                'download_size_mismatch': '完整接收后的文件大小与学校元数据不符，未保存目标文件。请核对学校标注大小、下载地址及代理响应，不要绕过校验，也不能仅凭此错误认定服务器文件损坏。',
                 'assignment_unavailable': '作业尚未开放、已经锁定或允许的提交次数已用完。',
                 'unsupported_submission': '此作业不支持 Canvas 文件上传，请使用其指定的提交方式。',
                 'attempt_conflict': '作业提交次数已经变化；请重新查询状态并决定是否重交，本次未提交。',
@@ -207,8 +210,11 @@ def create_server(data_dir, legacy_dir=None, user_id="local-default", *, hosted_
                     'invalid_arguments' if isinstance(error, ValueError) else getattr(error, 'code', 'query_failed'))
             if code not in messages:
                 code = 'query_failed'
+            message = messages[code]
+            if isinstance(error, DownloadSizeMismatch):
+                message += f' 学校标注 {error.expected_size} 字节，实际接收 {error.actual_size} 字节。'
             return CallToolResult(isError=True, content=[TextContent(type='text', text=json.dumps(
-                {'error_code': code, 'message': messages[code]}, ensure_ascii=False))])
+                {'error_code': code, 'message': message}, ensure_ascii=False))])
         except BaseException:
             cancel.set()
             raise

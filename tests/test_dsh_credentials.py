@@ -88,13 +88,14 @@ class DshWireTest(unittest.IsolatedAsyncioTestCase):
 import asyncio
 import sqlite3
 from unittest.mock import patch
-from elearning_mcp.errors import SyncError
+from elearning_mcp.errors import DownloadSizeMismatch, SyncError
 from elearning_mcp.server import main
 failures = iter([SyncError('synthetic-secret', code=code) for code in
             ['browser_unavailable', 'network_error', 'login_form_error', 'login_timeout',
              'network_dns_error', 'network_tls_error', 'network_timeout', 'network_permission_denied',
              'proxy_dns_fake_ip', 'file_server_blocked', 'local_file_error',
-             'school_access_denied', 'school_file_unavailable', 'school_http_error']] + [sqlite3.OperationalError('synthetic-secret')])
+             'school_access_denied', 'school_file_unavailable', 'school_http_error']] + [sqlite3.OperationalError('synthetic-secret'),
+              DownloadSizeMismatch(100, 13), SyncError('synthetic-secret', code='download_incomplete')])
 def courses(self):
     raise next(failures)
 with patch('elearning_mcp.server.ElearningService.list_courses', new=courses):
@@ -110,12 +111,15 @@ with patch('elearning_mcp.server.ElearningService.list_courses', new=courses):
                     for code in ['browser_unavailable', 'network_error', 'login_form_error', 'login_timeout',
                                  'network_dns_error', 'network_tls_error', 'network_timeout', 'network_permission_denied',
                                  'proxy_dns_fake_ip', 'file_server_blocked', 'local_file_error',
-                                 'school_access_denied', 'school_file_unavailable', 'school_http_error', 'storage_error']:
+                                 'school_access_denied', 'school_file_unavailable', 'school_http_error', 'storage_error',
+                                 'download_size_mismatch', 'download_incomplete']:
                         result = await session.call_tool('list_courses', {})
                         self.assertTrue(result.isError)
                         self.assertTrue(result.content[0].text.startswith('{'), result.content[0].text)
                         self.assertEqual(json.loads(result.content[0].text)['error_code'], code)
                         self.assertNotIn('synthetic-secret', result.model_dump_json())
+                        if code == 'download_size_mismatch':
+                            self.assertIn('学校标注 100 字节，实际接收 13 字节', result.content[0].text)
 
     async def test_download_and_submit_over_real_mcp_transport_with_synthetic_canvas(self):
         root = Path(__file__).resolve().parents[1]
