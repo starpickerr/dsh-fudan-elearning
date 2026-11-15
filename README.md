@@ -240,3 +240,9 @@ Local stdio MCP entry and existing-state compatibility: [MCP.md](MCP.md). The or
 DSH 凭据模式的失败回执保留 `error_code` 和安全的 `message`，区分网络 DNS/TLS/超时、代理 Fake-IP、非公网下载地址、本地路径、学校 HTTP 拒绝、不可用文件及实际资源权限。只输出固定提示，不回传原始异常、认证 URL 或凭据。下载地址与路径安全检查仍生效，下载不增加审批步骤；插件错误不能据此解释为宿主审批被拒绝。
 
 `proxy_dns_fake_ip` 表示文件域名解析到 `198.18.0.0/15`；应修复代理 DNS 使该域名返回真实公网地址，而不是放行私网地址或更改审批策略。已有文件不覆盖，写入结果不确定时先核对回执，不能先删旧文件或盲目重复提交。
+
+### OBS 分块内容兼容
+
+部分学校 OBS 下载响应在 HTTP 传输解码后仍含 AWS 上传分块标记和 `x-amz-checksum-crc32` 尾部。文件大小不符时，下载器仅在分块结构完整、CRC32 匹配、解码后大小严格等于学校标注，且没有额外尾随数据时恢复文件内容。否则仍拒绝保存并返回 `download_integrity_error` 或 `download_size_mismatch`。正常大小的文件不转换。512 MB 上限、取消、目录安全、不覆盖已有文件与 HTTPS/公网地址检查保持有效；单文件下载与配置目录同步共用此逻辑。
+
+格式依据：[AWS S3 trailing checksums](https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity-upload.html)。当前兼容已复现的无扩展分块和 CRC32 尾部，不将其泛化为自动修改任意大小不符文件。

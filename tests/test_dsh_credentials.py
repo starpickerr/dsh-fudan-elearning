@@ -95,7 +95,8 @@ failures = iter([SyncError('synthetic-secret', code=code) for code in
              'network_dns_error', 'network_tls_error', 'network_timeout', 'network_permission_denied',
              'proxy_dns_fake_ip', 'file_server_blocked', 'local_file_error',
              'school_access_denied', 'school_file_unavailable', 'school_http_error']] + [sqlite3.OperationalError('synthetic-secret'),
-              DownloadSizeMismatch(100, 13), SyncError('synthetic-secret', code='download_incomplete')])
+              DownloadSizeMismatch(100, 13), SyncError('synthetic-secret', code='download_incomplete'),
+              SyncError('synthetic-secret', code='download_integrity_error')])
 def courses(self):
     raise next(failures)
 with patch('elearning_mcp.server.ElearningService.list_courses', new=courses):
@@ -112,7 +113,7 @@ with patch('elearning_mcp.server.ElearningService.list_courses', new=courses):
                                  'network_dns_error', 'network_tls_error', 'network_timeout', 'network_permission_denied',
                                  'proxy_dns_fake_ip', 'file_server_blocked', 'local_file_error',
                                  'school_access_denied', 'school_file_unavailable', 'school_http_error', 'storage_error',
-                                 'download_size_mismatch', 'download_incomplete']:
+                                 'download_size_mismatch', 'download_incomplete', 'download_integrity_error']:
                         result = await session.call_tool('list_courses', {})
                         self.assertTrue(result.isError)
                         self.assertTrue(result.content[0].text.startswith('{'), result.content[0].text)

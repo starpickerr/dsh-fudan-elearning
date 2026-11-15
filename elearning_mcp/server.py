@@ -198,6 +198,7 @@ def create_server(data_dir, legacy_dir=None, user_id="local-default", *, hosted_
                 'download_failed': '下载未完成或文件大小校验失败，未保存目标文件。',
                 'download_incomplete': '接收文件内容时连接中断、超时或长度不足，内部重试已用完，未保存目标文件。请检查网络和代理后再试；此错误不能证明服务器文件损坏。',
                 'download_size_mismatch': '完整接收后的文件大小与学校元数据不符，未保存目标文件。请核对学校标注大小、下载地址及代理响应，不要绕过校验，也不能仅凭此错误认定服务器文件损坏。',
+                'download_integrity_error': '下载内容包含额外分块编码，但结构、CRC32 或解码后的大小验证失败，未保存目标文件。请检查源文件或学校下载服务，不要绕过校验。',
                 'assignment_unavailable': '作业尚未开放、已经锁定或允许的提交次数已用完。',
                 'unsupported_submission': '此作业不支持 Canvas 文件上传，请使用其指定的提交方式。',
                 'attempt_conflict': '作业提交次数已经变化；请重新查询状态并决定是否重交，本次未提交。',

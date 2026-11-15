@@ -53,7 +53,8 @@ def download_file(client, course_id, file_id, destination, check_cancelled):
         expected = raw.get('size')
         if not isinstance(expected, int) or isinstance(expected, bool) or not 0 <= expected <= _MAX_FILE_SIZE:
             raise SyncError("文件大小无效或超过 512 MB。", code='invalid_file')
-        temporary, digest = _download(client, raw['url'], directory, client.cancel_event if hasattr(client, 'cancel_event') else None)
+        temporary, digest = _download(client, raw['url'], directory, client.cancel_event if hasattr(client, 'cancel_event') else None,
+                                      expected_size=expected)
         actual = os.stat(temporary, dir_fd=directory, follow_symlinks=False).st_size
         if actual != expected:
             raise DownloadSizeMismatch(expected, actual)
