@@ -86,6 +86,7 @@ class DshWireTest(unittest.IsolatedAsyncioTestCase):
         root = Path(__file__).resolve().parents[1]
         bootstrap = '''
 import asyncio
+import sqlite3
 from unittest.mock import patch
 from elearning_mcp.errors import SyncError
 from elearning_mcp.server import main
@@ -93,7 +94,7 @@ failures = iter([SyncError('synthetic-secret', code=code) for code in
             ['browser_unavailable', 'network_error', 'login_form_error', 'login_timeout',
              'network_dns_error', 'network_tls_error', 'network_timeout', 'network_permission_denied',
              'proxy_dns_fake_ip', 'file_server_blocked', 'local_file_error',
-             'school_access_denied', 'school_file_unavailable', 'school_http_error']])
+             'school_access_denied', 'school_file_unavailable', 'school_http_error']] + [sqlite3.OperationalError('synthetic-secret')])
 def courses(self):
     raise next(failures)
 with patch('elearning_mcp.server.ElearningService.list_courses', new=courses):
@@ -109,7 +110,7 @@ with patch('elearning_mcp.server.ElearningService.list_courses', new=courses):
                     for code in ['browser_unavailable', 'network_error', 'login_form_error', 'login_timeout',
                                  'network_dns_error', 'network_tls_error', 'network_timeout', 'network_permission_denied',
                                  'proxy_dns_fake_ip', 'file_server_blocked', 'local_file_error',
-                                 'school_access_denied', 'school_file_unavailable', 'school_http_error']:
+                                 'school_access_denied', 'school_file_unavailable', 'school_http_error', 'storage_error']:
                         result = await session.call_tool('list_courses', {})
                         self.assertTrue(result.isError)
                         self.assertTrue(result.content[0].text.startswith('{'), result.content[0].text)

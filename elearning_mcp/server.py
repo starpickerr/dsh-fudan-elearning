@@ -5,6 +5,7 @@ import asyncio
 import json
 import inspect
 import logging
+import sqlite3
 from pathlib import Path
 import threading
 
@@ -189,6 +190,7 @@ def create_server(data_dir, legacy_dir=None, user_id="local-default", *, hosted_
                 'login_timeout': '学校登录未完成，可能需要验证码或额外认证；尚不能判断密码是否错误。',
                 'permission_denied': 'eLearning 资源访问被拒绝，请核对账号及有效资源范围。此回执不能证明 DSH 审批被拒绝，不要仅凭此错误更改审批策略。',
                 'query_failed': 'eLearning 查询未成功，请稍后重试。',
+                'storage_error': 'eLearning 插件本地数据库操作失败，请检查数据目录权限、磁盘空间及其他实例占用；保留数据库与备份，不要将此错误当作学校登录或审批拒绝。',
                 'invalid_arguments': '文件路径、课程、文件或作业参数无效，请核对后重试。',
                 'destination_exists': '目标文件已存在，请选择新的文件名；已有文件未被覆盖。',
                 'invalid_file': '文件不可读取、格式或大小不符要求，或在上传期间发生变化。请检查普通文件、作业格式和 512 MB 大小限制。',
@@ -201,6 +203,7 @@ def create_server(data_dir, legacy_dir=None, user_id="local-default", *, hosted_
                 'submission_unknown': '写入请求已发送，但结果无法确认；请先查询作业状态，勿直接重试；部分文件可能已上传。',
             }
             code = ('permission_denied' if isinstance(error, PermissionError) else
+                    'storage_error' if isinstance(error, sqlite3.Error) else
                     'invalid_arguments' if isinstance(error, ValueError) else getattr(error, 'code', 'query_failed'))
             if code not in messages:
                 code = 'query_failed'
