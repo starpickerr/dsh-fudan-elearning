@@ -6,7 +6,7 @@ import re
 import stat
 from urllib.parse import urlparse
 
-from .errors import SyncError
+from .errors import DownloadSizeMismatch, SyncError
 from .file_sync import _download, _open_directory, _check_directory, _MAX_FILE_SIZE
 from .locking import state_lock
 
@@ -49,13 +49,15 @@ def download_file(client, course_id, file_id, destination, check_cancelled):
         raw, _ = client.get(f'/api/v1/courses/{course_id}/files/{file_id}')
         if (not isinstance(raw, dict) or str(raw.get('id')) != file_id
                 or raw.get('locked_for_user') or raw.get('hidden_for_user') or not raw.get('url')):
-            raise SyncError("课程文件不可访问。", code='permission_denied')
+            raise SyncError("学校端课程文件不可访问。", code='school_file_unavailable')
         expected = raw.get('size')
         if not isinstance(expected, int) or isinstance(expected, bool) or not 0 <= expected <= _MAX_FILE_SIZE:
             raise SyncError("文件大小无效或超过 512 MB。", code='invalid_file')
-        temporary, digest = _download(client, raw['url'], directory, client.cancel_event if hasattr(client, 'cancel_event') else None)
-        if os.stat(temporary, dir_fd=directory, follow_symlinks=False).st_size != expected:
-            raise SyncError("下载文件大小与服务器不符，未保存。", code='download_failed')
+        temporary, digest = _download(client, raw['url'], directory, client.cancel_event if hasattr(client, 'cancel_event') else None,
+                                      expected_size=expected)
+        actual = os.stat(temporary, dir_fd=directory, follow_symlinks=False).st_size
+        if actual != expected:
+            raise DownloadSizeMismatch(expected, actual)
         check_cancelled()
         _check_directory(path.parent, directory)
         try:
@@ -64,6 +66,8 @@ def download_file(client, course_id, file_id, destination, check_cancelled):
             raise SyncError("目标文件已存在，请使用新文件名。", code='destination_exists') from None
         return {'status': 'downloaded', 'course_id': course_id, 'file_id': file_id,
                 'path': str(path), 'size': expected, 'sha256': digest}
+    except OSError as error:
+        raise SyncError('无法写入本地课件文件，请检查目标目录权限及剩余空间。', code='local_file_error') from error
     finally:
         if temporary is not None:
             os.unlink(temporary, dir_fd=directory)

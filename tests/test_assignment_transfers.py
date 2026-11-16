@@ -65,22 +65,52 @@ class TransferTest(unittest.TestCase):
         self.assertEqual(destination.read_bytes(), b'%PDF-homework')
         self.assertEqual(result['path'], str(destination))
         self.assertEqual(result['file_id'], '10')
-        with self.assertRaises(SyncError):
+        with self.assertRaises(SyncError) as failure:
             self.service.download_file('42', '10', str(destination))
+        self.assertEqual(failure.exception.code, 'destination_exists')
         self.assertEqual(destination.read_bytes(), b'%PDF-homework')
         self.assertFalse(list(self.root.glob('.elearning-*')))
 
     def test_download_mismatch_and_symlinks_leave_no_partial_files(self):
         self.canvas.file['size'] = 100
         destination = self.root / 'lecture.pdf'
-        with self.assertRaises(SyncError):
+        with self.assertRaises(SyncError) as failure:
             self.service.download_file('42', '10', str(destination))
+        self.assertEqual(failure.exception.code, 'download_size_mismatch')
+        self.assertEqual((failure.exception.expected_size, failure.exception.actual_size), (100, 13))
         self.assertFalse(destination.exists())
         self.assertFalse(list(self.root.glob('.elearning-*')))
         destination.symlink_to(self.homework)
         with self.assertRaises(SyncError):
             self.service.download_file('42', '10', str(destination))
         self.assertEqual(self.homework.read_bytes(), b'%PDF-homework')
+
+    def test_incomplete_download_is_not_reported_as_metadata_mismatch(self):
+        def response(*args, **kwargs):
+            value = Response()
+            value.headers['Content-Length'] = '100'
+            return value
+        destination = self.root / 'lecture.pdf'
+        with patch.object(self.canvas, 'open', side_effect=response), patch('elearning_mcp.file_sync._wait'):
+            with self.assertRaises(SyncError) as failure:
+                self.service.download_file('42', '10', str(destination))
+        self.assertEqual(failure.exception.code, 'download_incomplete')
+        self.assertFalse(destination.exists())
+        self.assertFalse(list(self.root.glob('.elearning-*')))
+
+    def test_download_distinguishes_local_write_and_school_file_failures(self):
+        with self.assertRaises(SyncError) as error:
+            self.service.download_file('42', '10', str(self.root / 'missing' / 'lecture.pdf'))
+        self.assertEqual(error.exception.code, 'local_file_error')
+        with patch('elearning_mcp.transfers._download', side_effect=PermissionError('private-path')):
+            with self.assertRaises(SyncError) as error:
+                self.service.download_file('42', '10', str(self.root / 'lecture.pdf'))
+            self.assertEqual(error.exception.code, 'local_file_error')
+        self.canvas.file['locked_for_user'] = True
+        with self.assertRaises(SyncError) as error:
+            self.service.download_file('42', '10', str(self.root / 'lecture.pdf'))
+        self.assertEqual(error.exception.code, 'school_file_unavailable')
+        self.assertFalse((self.root / 'lecture.pdf').exists())
 
     def test_outside_course_scope_or_link_never_reads_file(self):
         self.service.authorized_resources = []

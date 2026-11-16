@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import base64
 import hashlib
 import http.client
 import ipaddress
@@ -12,6 +13,7 @@ import re
 import stat
 import threading
 import time
+import zlib
 from pathlib import Path
 from urllib.error import URLError
 from urllib.parse import urlparse
@@ -106,7 +108,7 @@ def _open_directory(path):
     except OSError as exc:
         if descriptor is not None:
             os.close(descriptor)
-        raise SyncError("课程文件保存目录不可访问、权限不足或已移动，请检查目录及系统访问权限") from exc
+        raise SyncError("课程文件保存目录不可访问、权限不足或已移动，请检查目录及系统访问权限", code='local_file_error') from exc
 
 
 def _check_directory(path, descriptor):
@@ -114,7 +116,7 @@ def _check_directory(path, descriptor):
     try:
         actual, expected = os.fstat(current), os.fstat(descriptor)
         if (actual.st_dev, actual.st_ino) != (expected.st_dev, expected.st_ino):
-            raise SyncError("课程文件保存目录已移动，请重新选择目录")
+            raise SyncError("课程文件保存目录已移动，请重新选择目录", code='local_file_error')
     finally:
         os.close(current)
 
@@ -164,7 +166,63 @@ def _wait(cancel_event, seconds):
         raise SyncCancelled("eLearning 文件同步已取消")
 
 
-def _download(client, url, directory_fd, cancel_event=None):
+def _decode_aws_chunks(name, directory_fd, expected_size, cancel_event=None):
+    """Recover leaked OBS upload framing only with exact size and CRC32 proof."""
+    decoded = None
+    try:
+        descriptor = os.open(name, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0), dir_fd=directory_fd)
+        with os.fdopen(descriptor, 'rb') as source:
+            line = source.readline(128)
+            if not re.fullmatch(rb'[0-9a-fA-F]{1,16}\r\n', line):
+                return None
+            decoded = '.elearning-' + os.urandom(8).hex()
+            descriptor = os.open(decoded, _FILE_FLAGS, 0o600, dir_fd=directory_fd)
+            digest, checksum, total = hashlib.sha256(), 0, 0
+            with os.fdopen(descriptor, 'wb') as output:
+                while True:
+                    _check_cancelled(cancel_event)
+                    if not re.fullmatch(rb'[0-9a-fA-F]{1,16}\r\n', line):
+                        raise ValueError()
+                    remaining = int(line, 16)
+                    if remaining == 0:
+                        break
+                    if remaining > expected_size - total:
+                        raise ValueError()
+                    while remaining:
+                        _check_cancelled(cancel_event)
+                        block = source.read(min(128 * 1024, remaining))
+                        if not block:
+                            raise ValueError()
+                        output.write(block)
+                        checksum = zlib.crc32(block, checksum)
+                        digest.update(block)
+                        total += len(block)
+                        remaining -= len(block)
+                    if source.read(2) != b'\r\n':
+                        raise ValueError()
+                    line = source.readline(128)
+                trailer = source.readline(128)
+                if not trailer.lower().startswith(b'x-amz-checksum-crc32:') or not trailer.endswith(b'\r\n'):
+                    raise ValueError()
+                supplied = base64.b64decode(trailer.split(b':', 1)[1].strip(), validate=True)
+                if (len(supplied) != 4 or int.from_bytes(supplied, 'big') != checksum or total != expected_size
+                        or source.read(2) != b'\r\n' or source.read(1)):
+                    raise ValueError()
+                output.flush()
+                os.fsync(output.fileno())
+        os.replace(decoded, name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+        return digest.hexdigest()
+    except ValueError:
+        raise SyncError('下载内容包含分块编码，但结构、CRC32 或解码大小验证失败，未保存目标文件。', code='download_integrity_error') from None
+    finally:
+        if decoded is not None:
+            try:
+                os.unlink(decoded, dir_fd=directory_fd)
+            except FileNotFoundError:
+                pass
+
+
+def _download(client, url, directory_fd, cancel_event=None, *, expected_size=None):
     _check_cancelled(cancel_event)
     parsed = urlparse(url)
     if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
@@ -174,18 +232,27 @@ def _download(client, url, directory_fd, cancel_event=None):
     # including explicitly configured local services. Standalone keeps its guard.
     if getattr(client, 'opener_factory', None) is None:
         if host == "localhost" or host.endswith(".localhost"):
-            raise SyncError("课程文件下载地址不能指向本机")
+            raise SyncError("课程文件下载地址不能指向本机", code='file_server_blocked')
         try:
             if ipaddress.ip_address(host).is_private:
-                raise SyncError("课程文件下载地址不能指向私有网络")
+                raise SyncError("课程文件下载地址不能指向私有网络", code='file_server_blocked')
         except ValueError:
             pass
     for attempt in range(3):
         try:
-            return _download_once(client, url, directory_fd, cancel_event)
+            temporary, digest = _download_once(client, url, directory_fd, cancel_event)
+            try:
+                if (isinstance(expected_size, int) and not isinstance(expected_size, bool)
+                        and 0 <= expected_size <= _MAX_FILE_SIZE
+                        and os.stat(temporary, dir_fd=directory_fd, follow_symlinks=False).st_size != expected_size):
+                    digest = _decode_aws_chunks(temporary, directory_fd, expected_size, cancel_event) or digest
+                return temporary, digest
+            except BaseException:
+                os.unlink(temporary, dir_fd=directory_fd)
+                raise
         except _TruncatedDownload as exc:
             if attempt == 2:
-                raise SyncError("课程文件传输中断，已重试 3 次；下次同步会继续尝试") from exc
+                raise SyncError("课程文件传输中断，已重试 3 次；下次同步会继续尝试", code='download_incomplete') from exc
             _wait(cancel_event, 2 ** attempt)
 
 
@@ -370,7 +437,7 @@ def _sync_one(client, config, store, root, materials_fd, manifest, course, raw, 
             raise SyncError("课程文件没有可用的下载地址")
         logger.info("[eLearningFileSync] downloading course=%s file=%s", course_id, file_id)
         with _temporary_directory(root, directory_fd) as temporary_fd:
-            temporary, downloaded_digest = _download(client, url, temporary_fd, cancel_event)
+            temporary, downloaded_digest = _download(client, url, temporary_fd, cancel_event, expected_size=raw.get('size'))
             logger.info("[eLearningFileSync] downloaded course=%s file=%s", course_id, file_id)
             try:
                 _check_cancelled(cancel_event)
