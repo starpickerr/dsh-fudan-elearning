@@ -24,7 +24,7 @@ class HostedRequest(Request):
 
 DESCRIPTIONS = {
     "list_courses": "查询 eLearning 可访问课程的 ID 和名称。账号由设置管理，不接收凭证。",
-    "fetch": "读取课程公告、作业、测验、成绩和文件元数据；since/until 为时间窗口，offset/limit 分页。",
+    "fetch": "读取课程公告、作业、测验、单项成绩、课程总评和文件元数据；resource_types 可限定类型，如只查单项成绩传 ['grade']。since/until 为时间窗口，offset/limit 分页。",
     "list_files": "查询已选课程文件；可按课程、文件 ID 和扩展名筛选，不下载文件。",
     "sync_files": "下载已选课程课件到配置目录。保留本地文件；支持 managed/courseware 布局、筛选和重复同步。",
     "download_file": "下载课程文件到 destination 指定的本地绝对路径，不覆盖已有文件。file_id 接受文件 ID 或该课程的 eLearning 文件网页链接；最大 512 MB。",
@@ -49,6 +49,10 @@ def parameter_schema(name):
         return {"type": "object"}
     if name in {"course_ids", "file_ids", "file_extensions"}:
         return {"type": ["array", "null"], "items": {"type": "string"}}
+    if name == "resource_types":
+        return {"type": ["array", "null"], "items": {"type": "string", "enum":
+                ["announcement", "assignment", "quiz", "grade", "course_grade", "file"]},
+                "minItems": 1, "maxItems": 6, "uniqueItems": True}
     if name in {"offset", "limit", "lookback_days"}:
         return {"type": "integer"}
     if name == "refresh_existing_content":

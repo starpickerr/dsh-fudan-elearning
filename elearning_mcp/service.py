@@ -128,10 +128,14 @@ class ElearningService:
             raise ValueError("file_extensions 必须是扩展名列表，例如 pdf、ppt、pptx")
         return {value.lstrip(".").lower() for value in values}
 
-    def fetch(self, since=None, until=None, course_ids=None, offset=0, limit=20, cursors=None):
+    def fetch(self, since=None, until=None, course_ids=None, offset=0, limit=20, cursors=None, resource_types=None):
         """Windowed read; optional Host-owned cursors enable incremental briefing reads."""
         if cursors is not None and (not isinstance(cursors, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in cursors.items())):
             raise ValueError("cursors 必须是字符串游标对象")
+        valid_types = {'announcement', 'assignment', 'quiz', 'grade', 'course_grade', 'file'}
+        if resource_types is not None and (not isinstance(resource_types, list) or not resource_types
+                or any(not isinstance(kind, str) or kind not in valid_types for kind in resource_types)):
+            raise ValueError("resource_types 必须是公告、作业、测验、单项成绩、课程总评或文件的类型列表")
         cfg = self._credentialed_settings()
         offset, limit = self._page({"offset": offset, "limit": limit})
         now = self.clock()
@@ -166,7 +170,8 @@ class ElearningService:
                                  cancel_event=self.cancel_event, briefing_only=cursors is not None,
                                  include_existing_actionable=cursors is None)
         fetched = source.fetch({**(cursors or {}), "since": window["start"], "until": window["end"]})
-        rows = sorted((item for item in fetched.items if start < parse_date(item.occurred_at) <= end),
+        rows = sorted((item for item in fetched.items if start < parse_date(item.occurred_at) <= end
+                       and (resource_types is None or item.payload.get('resource_type') in resource_types)),
                       key=lambda item: (item.occurred_at, item.source_id))
         page = rows[offset:offset + limit]
         return {"source_items": [asdict(item) for item in page], "total": len(rows),

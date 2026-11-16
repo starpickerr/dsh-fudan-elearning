@@ -76,6 +76,18 @@ def test_elearning_tool_discovers_and_fetches_without_briefing_selection(config_
     assert tool.execute({"action": "fetch", "course_ids": ["99"]}).status == "error"
 
 
+def test_fetch_can_return_only_single_grades_with_zero_score(config_path):
+    settings.save_settings(config())
+    tool = ElearningTool(client_factory=lambda _: FakeCanvas())
+    options = {"action": "fetch", "since": "2026-09-08T12:00:00Z", "until": "2026-09-09T00:00:00Z"}
+    grade = json.loads(tool.execute({**options, "resource_types": ["grade"]}).result)
+    assert grade["total"] == 1
+    assert grade["source_items"][0]["payload"]["score"] == 0
+    assert grade["source_items"][0]["payload"]["points_possible"] == 100
+    assert json.loads(tool.execute({**options, "resource_types": ["course_grade"]}).result)["total"] == 1
+    assert tool.execute({**options, "resource_types": ["unknown"]}).status == "error"
+
+
 def test_canvas_cancel_interrupts_request_spacing_without_waiting_for_network(config_path):
     event = threading.Event()
     client = Canvas(config(token="token", request_interval=30), auto_login=False, cancel_event=event)
@@ -411,6 +423,17 @@ def test_new_pending_task_and_changes_without_server_dates_are_observed_once(con
     changed = source.fetch({**first.cursors, "since": "2026-09-09T00:00:00Z", "until": "2026-09-10T00:00:00Z"})
     assignment = next(item for item in changed.items if item.payload["resource_type"] == "assignment")
     assert assignment.occurred_at == "2026-09-10T00:00:00Z" and "要求有修改" in assignment.payload["body"]
+
+
+def test_grade_change_is_observed_after_previous_cursor(config_path):
+    canvas = FakeCanvas()
+    source = ElearningSource(config(), client_factory=lambda _: canvas)
+    first = source.fetch({"since": "2026-09-08T12:00:00Z", "until": "2026-09-09T00:00:00Z"})
+    assert next(row for row in first.items if row.payload["resource_type"] == "grade").payload["score"] == 0
+    canvas.rows["assignments"][0]["submission"]["score"] = 88
+    changed = source.fetch({**first.cursors, "since": "2026-09-09T00:00:00Z", "until": "2026-09-10T00:00:00Z"})
+    grade = next(row for row in changed.items if row.payload["resource_type"] == "grade")
+    assert grade.payload["score"] == 88 and grade.occurred_at == "2026-09-10T00:00:00Z"
 
 
 def test_partial_canvas_read_reports_failure_without_advancing_state(config_path):
