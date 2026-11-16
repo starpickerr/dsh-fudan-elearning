@@ -1,6 +1,7 @@
 """Text and date helpers adapted from elearning_crawler/src/utils.py."""
 import datetime as dt
 import re
+from urllib.parse import urljoin, urlparse
 from html.parser import HTMLParser
 
 SHANGHAI = dt.timezone(dt.timedelta(hours=8))
@@ -25,10 +26,11 @@ def md(value):
 
 
 class TextExtractor(HTMLParser):
-    def __init__(self):
+    def __init__(self, page=""):
         super().__init__(convert_charrefs=True)
         self.parts, self.links, self.skip = [], [], 0
         self.file_references = []
+        self.page = page
 
     def handle_starttag(self, tag, attrs):
         if tag in ("script", "style"):
@@ -54,7 +56,11 @@ class TextExtractor(HTMLParser):
                     self.file_references.append(attributes[key])
             if attributes.get("src"):
                 self.links.append(attributes["src"])
-            if attributes.get("alt"):
+            src = urljoin(self.page, attributes.get("src") or "")
+            if self.page and attributes.get("src") and urlparse(src).scheme in ("https", "http"):
+                label = md(attributes.get("alt") or "正文图片")
+                self.parts.append("![{}](<{}>)".format(label, src.replace(">", "%3E")))
+            elif attributes.get("alt"):
                 self.parts.append(attributes["alt"])
 
     def handle_endtag(self, tag):
@@ -68,8 +74,8 @@ class TextExtractor(HTMLParser):
             self.parts.append(data)
 
 
-def extract(html):
-    parser = TextExtractor()
+def extract(html, page=""):
+    parser = TextExtractor(page)
     parser.feed(html or "")
     text = "\n".join(line.strip() for line in "".join(parser.parts).splitlines() if line.strip())
     return text, list(dict.fromkeys(parser.links))

@@ -158,3 +158,25 @@ def test_fetch_cursor_is_optional_and_partial_pages_do_not_propose_progress(tmp_
     assert service.fetch(**args,cursors={})['cursors']=={}
     with pytest.raises(ValueError,match='cursors'):
         service.fetch(**args,cursors={'elearning_state':[]})
+
+def test_briefing_preserves_source_text_and_observes_later_grades(tmp_path):
+    service, canvas = _service(tmp_path)
+    service.save_settings(_settings())
+    assignment = canvas.rows["assignments"][0]
+    assignment["submission"] = {"workflow_state": "pending_review", "score": 63}
+    notice = canvas.rows["discussion_topics"][0]
+    notice["message"] = '<p>开头<img src="/files/1" alt="图示">结尾</p>' + '长' * 1100 + '末段要求'
+    notice["attachments"] = [{"display_name": "要求.pdf", "url": BASE + "/files/2"}]
+    first = service.fetch(since='2026-09-08T12:00:00Z', until='2026-09-09T00:00:00Z', cursors={})
+    rows = {row["payload"]["resource_type"]: row for row in first["source_items"]}
+    body = rows["announcement"]["payload"]["body"]
+    assert body.index("开头") < body.index("![图示]") < body.index("结尾") < body.index("末段要求")
+    assert "要求.pdf" in body and "末段要求" not in rows["announcement"]["snippet"]
+    assert rows["grade"]["payload"]["score"] is None and "63 /" not in rows["grade"]["payload"]["body"]
+    cursor = first["cursors"]
+    for day, score in [(9, 0), (10, 85), (11, 85)]:
+        assignment["submission"] = {"workflow_state": "graded", "score": score}
+        page = service.fetch(since=f"2026-09-{day:02}T00:00:00Z", until=f"2026-09-{day+1:02}T00:00:00Z", cursors=cursor)
+        grades = [row["payload"]["score"] for row in page["source_items"] if row["payload"]["resource_type"] == "grade"]
+        assert grades == ([score] if day < 11 else [])
+        cursor = page["cursors"]

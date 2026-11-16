@@ -14,7 +14,7 @@ def document(title, course, fields, html=None, page=""):
     lines = ["# " + md(title), "", "- 课程：" + md(course["name"])]
     lines.extend("- {}：{}".format(label, md(value)) for label, value in fields)
     if html is not None:
-        text, links = extract(html)
+        text, links = extract(html, page)
         lines += ["", "## 内容", "", text or "网站未提供文字内容，请打开原页面查看。"]
         links = dict.fromkeys(urllib.parse.urljoin(page, link) for link in links)
         for link in links:
@@ -31,6 +31,10 @@ def announcement(canvas, course, item):
     posted = display_date(item.get("posted_at") or item.get("created_at"))
     author = (item.get("author") or {}).get("display_name") or "未提供"
     fields = [("发布时间", posted), ("发布者", author)]
+    for attachment in item.get("attachments") or []:
+        url = attachment.get("html_url") or attachment.get("url")
+        if url and urllib.parse.urlparse(urllib.parse.urljoin(page, url)).scheme in ("https", "http"):
+            fields.append(("附件", (attachment.get("display_name") or attachment.get("filename") or "附件") + " " + urllib.parse.urljoin(page, url)))
     return Resource(course, str(item["id"]), title, "发布 " + posted,
                     document(title, course, fields, item.get("message") or "", page), page,
                     item.get("posted_at") or item.get("created_at") or "")
@@ -66,6 +70,15 @@ def quiz(canvas, course, item, from_assignment=False):
                     document(title, course, fields, item.get("description") or "", page), page)
 
 
+def visible_grade(item, submission):
+    state = submission.get("workflow_state")
+    hidden = item.get("muted") or ("posted_at" in submission and not submission["posted_at"])
+    visible = not hidden and state != "pending_review" and not submission.get("excused")
+    return {"score": submission.get("score") if visible else None,
+            "grade": submission.get("grade") if visible else None,
+            "points_possible": item.get("points_possible")}
+
+
 def grade(canvas, course, item):
     submission = item.get("submission") or {}
     title = item.get("name") or "未命名作业"
@@ -73,6 +86,8 @@ def grade(canvas, course, item):
     state = submission.get("workflow_state")
     if submission.get("excused"):
         status = "免交"
+    elif state == "pending_review":
+        status = "已提交，成绩待复核"
     elif hidden and state == "graded":
         status = "评分尚未公布"
     elif state == "graded" or (submission.get("score") is not None and not hidden):
@@ -83,9 +98,10 @@ def grade(canvas, course, item):
         status = "未提交"
     else:
         status = "评分状态未提供"
-    score = "未公布" if hidden else value_text(submission.get("score"), "未公布")
-    grade_text = "未公布" if hidden else value_text(submission.get("grade"), "未公布")
-    possible = value_text(item.get("points_possible"))
+    visible = visible_grade(item, submission)
+    score = value_text(visible["score"], "未公布")
+    grade_text = value_text(visible["grade"], "未公布")
+    possible = value_text(visible["points_possible"])
     fields = [("状态", status), ("得分 / 满分", score + " / " + possible), ("等级或评分", grade_text),
               ("提交时间", display_date(submission.get("submitted_at"))),
               ("评分时间", display_date(submission.get("graded_at"))), ("截止时间", display_date(item.get("due_at")))]

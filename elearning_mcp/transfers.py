@@ -6,6 +6,7 @@ import re
 import stat
 from urllib.parse import urlparse
 
+from .documents import visible_grade
 from .errors import DownloadSizeMismatch, SyncError
 from .file_sync import _download, _open_directory, _check_directory, _MAX_FILE_SIZE
 from .locking import state_lock
@@ -91,6 +92,7 @@ def read_assignment(client, course_id, assignment_id):
     return {key: raw.get(key) for key in ('name', 'description', 'submission_types', 'allowed_extensions',
             'due_at', 'unlock_at', 'lock_at', 'locked_for_user', 'allowed_attempts', 'has_submitted_submissions')} | {
         'course_id': course_id, 'assignment_id': assignment_id,
+        'grading': visible_grade(raw, submission),
         'page_url': f'{client.base}/courses/{course_id}/assignments/{assignment_id}',
         'submission': {'attempt': attempt, **{key: submission.get(key) for key in (
             'workflow_state', 'submitted_at', 'late', 'missing', 'submission_type')},

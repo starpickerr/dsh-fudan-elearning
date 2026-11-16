@@ -9,7 +9,7 @@ import logging
 
 from .client import ensure_login
 from .courses import course_list, select_courses, list_files, list_recent_files
-from .documents import announcement, assignment_document, quiz, grade, course_grade
+from .documents import announcement, assignment_document, quiz, grade, course_grade, visible_grade
 from .errors import LoginRequired, SyncCancelled, SyncError
 from .models import FetchResult, FetchedItem
 from .store import account_id
@@ -56,7 +56,7 @@ class ElearningSource:
         assignments_by_course = {}
         reads = 0
 
-        def add(course, kind, raw, title, body, url, sender="", actionable=False):
+        def add(course, kind, raw, title, body, url, sender="", actionable=False, summary=""):
             self._check_cancelled()
             key = "{}:{}:{}".format(course["id"], kind, raw["id"])
             fingerprint = hashlib.sha256(json.dumps(raw, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
@@ -80,12 +80,11 @@ class ElearningSource:
                 return
             items.append(FetchedItem(source=self.name, account_id=self.account_id, source_id=key, thread_id=key,
                 sender=sender or course["name"], title=course["name"] + " · " + title,
-                snippet=body[:1000], occurred_at=occurred.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+                snippet=summary, occurred_at=occurred.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
                 url=url, payload={"body": body, "resource_type": kind, "course_id": str(course["id"]),
                                   "course_name": course["name"], "due_at": raw.get("due_at"), "fingerprint": fingerprint,
                                   "entity_id": "{}:assignment:{}".format(course["id"], raw["id"]) if kind in {"assignment", "grade"} else key,
-                                  "submission_status": submission.get("workflow_state"), "score": submission.get("score"),
-                                  "grade": submission.get("grade")}))
+                                  "submission_status": submission.get("workflow_state"), **visible_grade(raw, submission)}))
 
         def read(course, resource, params=None):
             nonlocal reads
@@ -129,14 +128,14 @@ class ElearningSource:
                 page = raw.get("html_url") or "{}/courses/{}/assignments/{}".format(client.base, course["id"], raw["id"])
                 if raw.get("is_quiz_assignment") or raw.get("quiz_id"):
                     document = quiz(client, course, raw, from_assignment=True)
-                    add(course, "assignment", raw, document.title, document.text, page, actionable=True)
+                    add(course, "assignment", raw, document.title, document.text, page, actionable=True, summary=document.summary)
                 else:
                     document = assignment_document(client, course, raw, observed)
                     add(course, "assignment", raw, raw.get("name") or "作业", document["text"], page,
-                        actionable=not document["submitted"])
-                if raw.get("submission") and ((raw["submission"].get("graded_at")) or raw["submission"].get("submission_comments")):
+                        actionable=not document["submitted"], summary=document["status"])
+                if raw.get("submission"):
                     document = grade(client, course, raw)
-                    add(course, "grade", raw, document.title + " · 评分", document.text, document.url)
+                    add(course, "grade", raw, document.title + " · 评分", document.text, document.url, summary=document.summary)
             logger.info("[eLearning] assignments read course=%s count=%d", course["id"], len(assignments))
             if self.on_items_ready is not None:
                 self.on_items_ready(list(items))
@@ -147,7 +146,7 @@ class ElearningSource:
                 self._check_cancelled()
                 document = announcement(client, course, raw)
                 add(course, "announcement", raw, document.title, document.text, document.url,
-                    (raw.get("author") or {}).get("display_name", ""))
+                    (raw.get("author") or {}).get("display_name", ""), summary=document.summary)
             assignments = assignments_by_course[str(course["id"])]
             known_quizzes = {str(row["quiz_id"]) for row in assignments if row.get("quiz_id")}
             known_quiz_assignments = {str(row["id"]) for row in assignments if row.get("is_quiz_assignment") or row.get("quiz_id")}
@@ -156,18 +155,18 @@ class ElearningSource:
                 if str(raw["id"]) in known_quizzes or str(raw.get("assignment_id")) in known_quiz_assignments:
                     continue
                 document = quiz(client, course, raw)
-                add(course, "quiz", raw, document.title, document.text, document.url, actionable=True)
+                add(course, "quiz", raw, document.title, document.text, document.url, actionable=True, summary=document.summary)
             for raw in files(course):
                 self._check_cancelled()
                 title = raw.get("display_name") or raw.get("filename") or "课程文件"
                 page = "{}/courses/{}/files/{}".format(client.base, course["id"], raw["id"])
                 body = "课程：{}\n文件：{}\n大小：{} 字节\n更新时间：{}\n原页面：{}".format(
                     course["name"], title, raw.get("size", "未提供"), raw.get("updated_at") or raw.get("modified_at") or "未提供", page)
-                add(course, "file", raw, title, body, page)
+                add(course, "file", raw, title, body, page, summary="{} 字节".format(raw["size"]) if raw.get("size") is not None else "")
             for raw in read(course, "enrollments", {"user_id": str(profile["id"]), "type[]": "StudentEnrollment"}):
                 self._check_cancelled()
                 document = course_grade(client, course, raw)
-                add(course, "course_grade", raw, document.title, document.text, document.url)
+                add(course, "course_grade", raw, document.title, document.text, document.url, summary=document.summary)
             logger.info("[eLearning] metadata read course=%s candidates=%d", course["id"], len(items))
             if self.on_items_ready is not None:
                 self.on_items_ready(list(items))
