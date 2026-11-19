@@ -9,8 +9,10 @@ import sys
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dist-dir", type=Path, default=Path("dist"))
+    parser.add_argument("--build-dir", type=Path)
     args = parser.parse_args()
     root = Path(__file__).resolve().parent
+    build = args.build_dir.resolve() if args.build_dir else root / "build"
     subprocess.run(
         [
             sys.executable,
@@ -24,13 +26,15 @@ if __name__ == "__main__":
             "--distpath",
             str(args.dist_dir.resolve()),
             "--workpath",
-            str(root / "build/work"),
+            str(build / "work"),
             "--specpath",
-            str(root / "build"),
+            str(build),
             "--paths",
             str(root),
             "--collect-submodules",
-            "mcp",
+            "mcp.server.lowlevel",
+            "--collect-submodules",
+            "mcp.shared",
             "--collect-data",
             "elearning_mcp",
             "--exclude-module",
@@ -43,5 +47,5 @@ if __name__ == "__main__":
         ],
         check=True,
         cwd=root,
-        env={**os.environ, "PYINSTALLER_CONFIG_DIR": str(root / "build/cache")},
+        env={**os.environ, "PYINSTALLER_CONFIG_DIR": str(build / "cache")},
     )

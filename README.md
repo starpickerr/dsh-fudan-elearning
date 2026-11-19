@@ -1,5 +1,7 @@
 # dsh-fudan-elearning
 
+**DSH 插件** · 复旦 eLearning也可作为原生 DSH 插件独立安装，安装与开发说明见 [plugin/README.md](plugin/README.md)。
+
 复旦 eLearning 自动化助手，提供本地命令行程序和独立的 stdio MCP 服务。CLI 支持课程、作业、公告及文件整理；MCP 提供课程查询与文件同步。访问范围由学校账号权限决定。
 
 MCP 的安装、账号配置、工具和运行方式见 [MCP.md](MCP.md)。CLI 与 MCP 使用各自的数据配置：CLI 的 `.env` 不会自动提供给 MCP。服务能力简介保存在 `elearning_mcp/capability.json`，随包分发。

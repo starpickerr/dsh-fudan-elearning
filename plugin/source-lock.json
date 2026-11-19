@@ -1,0 +1,14 @@
+{
+  "repo": "dsh-fudan-elearning",
+  "module": "elearning_mcp",
+  "package": "alcor-elearning",
+  "binary": "elearning-mcp",
+  "version": "1.0.13",
+  "sourceSha256": "9c64894953ddc785a30118ce9ea5ac44a99d6278c4e5ca69547ef4e577a1aecc",
+  "dependencies": {
+    "mcp": "1.30.0",
+    "PyInstaller": "6.22.3",
+    "playwright": "1.52.0"
+  },
+  "sourceRevision": "9ec3ef73cc75a2ff157cbe5e96cb8a1dfc43a488"
+}
