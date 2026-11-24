@@ -5,10 +5,12 @@
   "type": "module",
   "license": "MIT",
   "os": [
-    "darwin"
+    "darwin",
+    "win32"
   ],
   "cpu": [
-    "arm64"
+    "arm64",
+    "x64"
   ],
   "files": [
     "lib",

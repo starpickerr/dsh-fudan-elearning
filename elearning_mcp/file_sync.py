@@ -18,6 +18,7 @@ from pathlib import Path
 from urllib.error import URLError
 from urllib.parse import urlparse
 
+from . import file_access
 from .locking import state_lock
 from .errors import SyncCancelled, SyncError
 from .store import account_id, write_json
@@ -26,8 +27,6 @@ logger = logging.getLogger("stella.elearning.file_sync")
 
 _lock = threading.RLock()
 _MAX_FILE_SIZE = 512 * 1024 * 1024
-_DIRECTORY_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-_FILE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
 
 
 def _component(value, fallback):
@@ -49,7 +48,11 @@ def _courseware_filename(raw):
     # or exceed a filesystem component limit.
     original = str(raw.get("filename") or raw.get("display_name") or "").replace("/", "_").replace("\\", "_")
     original = "".join(char for char in original if ord(char) >= 32).strip()
+    if os.name == 'nt':
+        original = re.sub(r'[<>:"|?*]', '_', original).rstrip(' .')
     if original in ("", ".", ".."):
+        return _filename(raw)
+    if not file_access.valid_name(original):
         return _filename(raw)
     if len(original.encode("utf-8")) <= 240:
         return original
@@ -72,6 +75,8 @@ def _versioned_filename(name, version):
 def _courseware_folder(course):
     name = re.sub(r"^[A-Za-z]{2,}[-_]?\d{3,}(?:[.-]\d+)*\s+", "", str(course.get("name") or ""))
     safe = _component(name, "课程")
+    if not file_access.valid_name(safe):
+        safe = '_' + safe
     while len(safe.encode("utf-8")) > 240:
         safe = safe[:-1]
     return safe
@@ -83,9 +88,7 @@ def _manifest_path(store, config, layout):
 
 
 def _manifest_name(value):
-    return (isinstance(value, str) and value not in ("", ".", "..")
-            and os.path.basename(value) == value and "\\" not in value
-            and not any(ord(char) < 32 for char in value))
+    return file_access.valid_name(value)
 
 
 def _fingerprint(raw):
@@ -97,37 +100,24 @@ def _open_directory(path):
     """Walk every component without following links, including root ancestors."""
     if not path.is_absolute() or ".." in path.parts:
         raise SyncError("课程文件保存目录无效")
-    descriptor = None
     try:
-        descriptor = os.open(path.anchor, _DIRECTORY_FLAGS)
-        for component in path.parts[1:]:
-            child = os.open(component, _DIRECTORY_FLAGS, dir_fd=descriptor)
-            os.close(descriptor)
-            descriptor = child
-        return descriptor
+        return file_access.open_directory(path)
     except OSError as exc:
-        if descriptor is not None:
-            os.close(descriptor)
         raise SyncError("课程文件保存目录不可访问、权限不足或已移动，请检查目录及系统访问权限", code='local_file_error') from exc
 
 
 def _check_directory(path, descriptor):
     current = _open_directory(path)
     try:
-        actual, expected = os.fstat(current), os.fstat(descriptor)
-        if (actual.st_dev, actual.st_ino) != (expected.st_dev, expected.st_ino):
+        if not file_access.same_directory(current, descriptor):
             raise SyncError("课程文件保存目录已移动，请重新选择目录", code='local_file_error')
     finally:
-        os.close(current)
+        file_access.close(current)
 
 
 def _open_child(parent_fd, name):
     try:
-        os.mkdir(name, 0o700, dir_fd=parent_fd)
-    except FileExistsError:
-        pass
-    try:
-        return os.open(name, _DIRECTORY_FLAGS, dir_fd=parent_fd)
+        return file_access.open_child(parent_fd, name)
     except OSError as exc:
         raise SyncError(f"课程资料路径不是安全目录：{name}") from exc
 
@@ -135,12 +125,12 @@ def _open_child(parent_fd, name):
 def _digest_existing(directory_fd, name, cancel_event=None):
     _check_cancelled(cancel_event)
     try:
-        info = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        info = file_access.inspect(directory_fd, name)
     except FileNotFoundError:
         return None
     if not stat.S_ISREG(info.st_mode):
         raise SyncError(f"课程文件目标不是普通文件：{name}")
-    descriptor = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=directory_fd)
+    descriptor = file_access.open_read(directory_fd, name)
     digest = hashlib.sha256()
     with os.fdopen(descriptor, "rb") as stream:
         for block in iter(lambda: stream.read(128 * 1024), b""):
@@ -170,13 +160,13 @@ def _decode_aws_chunks(name, directory_fd, expected_size, cancel_event=None):
     """Recover leaked OBS upload framing only with exact size and CRC32 proof."""
     decoded = None
     try:
-        descriptor = os.open(name, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0), dir_fd=directory_fd)
+        descriptor = file_access.open_read(directory_fd, name)
         with os.fdopen(descriptor, 'rb') as source:
             line = source.readline(128)
             if not re.fullmatch(rb'[0-9a-fA-F]{1,16}\r\n', line):
                 return None
             decoded = '.elearning-' + os.urandom(8).hex()
-            descriptor = os.open(decoded, _FILE_FLAGS, 0o600, dir_fd=directory_fd)
+            descriptor = file_access.create(directory_fd, decoded)
             digest, checksum, total = hashlib.sha256(), 0, 0
             with os.fdopen(descriptor, 'wb') as output:
                 while True:
@@ -210,14 +200,14 @@ def _decode_aws_chunks(name, directory_fd, expected_size, cancel_event=None):
                     raise ValueError()
                 output.flush()
                 os.fsync(output.fileno())
-        os.replace(decoded, name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+        file_access.replace(directory_fd, decoded, name)
         return digest.hexdigest()
     except ValueError:
         raise SyncError('下载内容包含分块编码，但结构、CRC32 或解码大小验证失败，未保存目标文件。', code='download_integrity_error') from None
     finally:
         if decoded is not None:
             try:
-                os.unlink(decoded, dir_fd=directory_fd)
+                file_access.unlink(directory_fd, decoded)
             except FileNotFoundError:
                 pass
 
@@ -244,11 +234,11 @@ def _download(client, url, directory_fd, cancel_event=None, *, expected_size=Non
             try:
                 if (isinstance(expected_size, int) and not isinstance(expected_size, bool)
                         and 0 <= expected_size <= _MAX_FILE_SIZE
-                        and os.stat(temporary, dir_fd=directory_fd, follow_symlinks=False).st_size != expected_size):
+                        and file_access.inspect(directory_fd, temporary).st_size != expected_size):
                     digest = _decode_aws_chunks(temporary, directory_fd, expected_size, cancel_event) or digest
                 return temporary, digest
             except BaseException:
-                os.unlink(temporary, dir_fd=directory_fd)
+                file_access.unlink(directory_fd, temporary)
                 raise
         except _TruncatedDownload as exc:
             if attempt == 2:
@@ -271,13 +261,13 @@ def _temporary_directory(root, fallback):
     try:
         yield descriptor
     finally:
-        os.close(descriptor)
+        file_access.close(descriptor)
 
 
 def _download_once(client, url, directory_fd, cancel_event=None):
     _check_cancelled(cancel_event)
     temporary = ".elearning-" + os.urandom(8).hex()
-    descriptor = os.open(temporary, _FILE_FLAGS, 0o600, dir_fd=directory_fd)
+    descriptor = file_access.create(directory_fd, temporary)
     digest = hashlib.sha256()
     size = 0
     try:
@@ -307,7 +297,7 @@ def _download_once(client, url, directory_fd, cancel_event=None):
         return temporary, digest.hexdigest()
     except Exception:
         try:
-            os.unlink(temporary, dir_fd=directory_fd)
+            file_access.unlink(directory_fd, temporary)
         except FileNotFoundError:
             pass
         raise
@@ -381,7 +371,7 @@ def sync_files(client, config, rows, store, cancel_event=None, layout="managed",
             except SyncError as exc:
                 errors.append(str(exc))
             finally:
-                os.close(root_fd)
+                file_access.close(root_fd)
         finally:
             _lock.release()
     return errors
@@ -409,7 +399,7 @@ def _sync_one(client, config, store, root, materials_fd, manifest, course, raw, 
     try:
         directory_fd = _open_child(course_fd, "课件") if layout == "courseware" else course_fd
     except Exception:
-        os.close(course_fd)
+        file_access.close(course_fd)
         raise
     try:
         key = f"{course_id}:{file_id}"
@@ -462,17 +452,16 @@ def _sync_one(client, config, store, root, materials_fd, manifest, course, raw, 
                 _check_cancelled(cancel_event)
                 _current_configuration(store, config, course_id)
                 _check_directory(destination.parent, directory_fd)
-                os.link(temporary, name, src_dir_fd=temporary_fd, dst_dir_fd=directory_fd,
-                        follow_symlinks=False)
-                os.unlink(temporary, dir_fd=temporary_fd)
+                file_access.link(temporary_fd, temporary, directory_fd, name)
+                file_access.unlink(temporary_fd, temporary)
                 manifest["files"][key] = {"remote": remote, "name": name, "sha256": downloaded_digest}
                 _save_manifest(store, config, manifest, layout)
             finally:
                 try:
-                    os.unlink(temporary, dir_fd=temporary_fd)
+                    file_access.unlink(temporary_fd, temporary)
                 except FileNotFoundError:
                     pass
     finally:
         if directory_fd != course_fd:
-            os.close(directory_fd)
-        os.close(course_fd)
+            file_access.close(directory_fd)
+        file_access.close(course_fd)

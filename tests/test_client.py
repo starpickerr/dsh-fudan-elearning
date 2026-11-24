@@ -1,6 +1,7 @@
 import contextlib
 import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -27,7 +28,8 @@ class ClientTests(unittest.TestCase):
         with patch.dict(utils.os.environ, {}, clear=True):
             self.assertEqual(client.read_login_credentials(), ("123456", "p #=$HOME${UNDEFINED} \\ ' "))
             self.assertNotIn("ELEARNING_PASSWORD", utils.os.environ)
-        self.assertEqual(self.env_file.stat().st_mode & 0o777, 0o600)
+        if os.name == 'posix':
+            self.assertEqual(self.env_file.stat().st_mode & 0o777, 0o600)
 
 
     def test_missing_and_incomplete_credentials_fail_without_values(self):

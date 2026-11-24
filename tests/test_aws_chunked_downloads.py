@@ -60,9 +60,9 @@ class AwsChunkedDownloadTest(unittest.TestCase):
             self.assertEqual(receipt['size'], len(body))
 
     def test_cancelled_decoding_keeps_source_and_cleans_decoded_staging(self):
+        from elearning_mcp import file_access
         from elearning_mcp.file_sync import _decode_aws_chunks, _open_directory
         from elearning_mcp.errors import SyncCancelled
-        import os
         body = b'%PDF-1.3\nsynthetic\n%%EOF\n'
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve(); path = root / '.elearning-original'; path.write_bytes(aws_chunks(body))
@@ -72,6 +72,6 @@ class AwsChunkedDownloadTest(unittest.TestCase):
                     with self.assertRaises(SyncCancelled):
                         _decode_aws_chunks(path.name, descriptor, len(body))
             finally:
-                os.close(descriptor)
+                file_access.close(descriptor)
             self.assertEqual(path.read_bytes(), aws_chunks(body))
             self.assertEqual(list(root.iterdir()), [path])

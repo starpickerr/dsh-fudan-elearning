@@ -1,12 +1,14 @@
 """Directory configuration is business state, never a second permission switch."""
 import io
 import json
+import os
 from unittest.mock import Mock
 
 import pytest
 
 from stella_elearning_test_support import ElearningService, settings, sync_files
 from stella_elearning_test_support.fakes import BASE, FakeCanvas, config
+from tests.filesystem import link_directory
 
 
 @pytest.mark.parametrize('legacy_flag', [None, False])
@@ -73,7 +75,7 @@ def test_sync_refuses_ancestor_symlink_swap_after_directory_validation(config_pa
         if not swapped:
             swapped = True
             parent.rename(tmp_path / 'original')
-            parent.symlink_to(outside, target_is_directory=True)
+            link_directory(parent, outside)
         return load()
 
     monkeypatch.setattr(store, 'load_settings', swap)
@@ -94,16 +96,25 @@ def test_sync_refuses_root_move_during_download(config_path, tmp_path):
     moved = tmp_path / 'moved'
 
     def download(*args, **kwargs):
-        root.rename(moved)
-        root.mkdir()
+        if os.name == 'nt':
+            with pytest.raises(PermissionError):
+                root.rename(moved)
+        else:
+            root.rename(moved)
+            root.mkdir()
         return io.BytesIO(b'courseware')
 
     client = Mock()
     client.open.side_effect = download
     errors = sync_files(client, cfg, _download_rows())
-    assert errors and '目录' in errors[0]
-    assert not list(moved.rglob('*.pdf')) and not list(root.rglob('*.pdf'))
-    assert not list(moved.rglob('.elearning-*'))
+    if os.name == 'nt':
+        assert errors == []
+        assert next(root.rglob('*.pdf')).read_bytes() == b'courseware'
+    else:
+        assert errors and '目录' in errors[0]
+        assert not list(root.rglob('*.pdf'))
+    assert not list(moved.rglob('*.pdf'))
+    assert not list(moved.rglob('.elearning-*')) and not list(root.rglob('.elearning-*'))
 
 
 def test_sync_keeps_os_permission_errors_and_does_not_record_success(config_path, tmp_path, monkeypatch):
@@ -114,14 +125,14 @@ def test_sync_keeps_os_permission_errors_and_does_not_record_success(config_path
     root.mkdir()
     settings.save_settings(config(file_sync_root=str(root.resolve())))
     cfg = settings.load_settings()
-    original = file_sync.os.open
+    original = file_sync.file_access.open_directory
 
-    def denied(path, flags, *args, **kwargs):
-        if str(path) == 'selected' and 'dir_fd' in kwargs:
+    def denied(path):
+        if path == root:
             raise PermissionError(errno.EACCES, 'Permission denied')
-        return original(path, flags, *args, **kwargs)
+        return original(path)
 
-    monkeypatch.setattr(file_sync.os, 'open', denied)
+    monkeypatch.setattr(file_sync.file_access, 'open_directory', denied)
     client = Mock()
     errors = sync_files(client, cfg, _download_rows())
     assert errors and '权限不足' in errors[0]
@@ -213,7 +224,8 @@ def test_core_staging_rejects_directory_escape(config_path, tmp_path, monkeypatc
     root.mkdir()
     outside.mkdir()
     staging = root / 'link'
-    staging.symlink_to(outside, target_is_directory=True)
+    if unsafe == 'symlink':
+        link_directory(staging, outside)
     monkeypatch.setenv('STELLA_MCP_OUTPUT_TEMP', str(staging if unsafe == 'symlink' else outside))
     settings.save_settings(config(file_sync_root=str(root.resolve())))
     client = Mock()

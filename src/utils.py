@@ -1,7 +1,7 @@
 """路径、配置读写、文本整理和运行锁等通用工具。"""
 import contextlib
 import datetime as dt
-import fcntl
+import errno
 import hashlib
 import json
 import logging
@@ -242,12 +242,32 @@ def prompt_choices(prompt, count):
 def run_lock():
     PRIVATE.mkdir(mode=0o700, exist_ok=True)
     os.chmod(PRIVATE, 0o700)
-    with (PRIVATE / "run.lock").open("a") as handle:
+    with (PRIVATE / "run.lock").open("a+b") as handle:
+        if os.name == "nt":
+            import msvcrt
+
+            def lock():
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+
+            def unlock():
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            def lock():
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+            def unlock():
+                fcntl.flock(handle, fcntl.LOCK_UN)
         try:
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
+            lock()
+        except OSError as error:
+            if error.errno not in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
+                raise
             raise SyncError("另一个同步正在运行，请稍后再试。") from None
         try:
             yield
         finally:
-            fcntl.flock(handle, fcntl.LOCK_UN)
+            unlock()
