@@ -20,7 +20,7 @@ if __name__ == "__main__":
             "PyInstaller",
             "--noconfirm",
             "--clean",
-            "--onedir",
+            "--onefile" if os.name == "nt" else "--onedir",
             "--name",
             "elearning-mcp",
             "--distpath",

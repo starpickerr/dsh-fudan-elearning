@@ -1,4 +1,5 @@
 import io
+import os
 import tempfile
 import threading
 import unittest
@@ -8,6 +9,7 @@ from unittest.mock import patch
 from elearning_mcp.dsh_credentials import DshCredentialStore
 from elearning_mcp.errors import SyncError, SyncCancelled
 from elearning_mcp.service import ElearningService
+from tests.filesystem import link_directory
 
 BASE = 'https://elearning.fudan.edu.cn'
 
@@ -71,7 +73,7 @@ class TransferTest(unittest.TestCase):
         self.assertEqual(destination.read_bytes(), b'%PDF-homework')
         self.assertFalse(list(self.root.glob('.elearning-*')))
 
-    def test_download_mismatch_and_symlinks_leave_no_partial_files(self):
+    def test_download_mismatch_leaves_no_partial_files(self):
         self.canvas.file['size'] = 100
         destination = self.root / 'lecture.pdf'
         with self.assertRaises(SyncError) as failure:
@@ -80,7 +82,10 @@ class TransferTest(unittest.TestCase):
         self.assertEqual((failure.exception.expected_size, failure.exception.actual_size), (100, 13))
         self.assertFalse(destination.exists())
         self.assertFalse(list(self.root.glob('.elearning-*')))
-        destination.symlink_to(self.homework)
+
+    def test_download_rejects_existing_file_symlink(self):
+        destination = self.root / 'lecture.pdf'
+        self.make_file_symlink(destination)
         with self.assertRaises(SyncError):
             self.service.download_file('42', '10', str(destination))
         self.assertEqual(self.homework.read_bytes(), b'%PDF-homework')
@@ -156,12 +161,37 @@ class TransferTest(unittest.TestCase):
     def test_validate_all_local_files_before_any_upload(self):
         text = self.root / 'answer.txt'
         text.write_text('answer')
-        symbolic = self.root / 'linked.pdf'
-        symbolic.symlink_to(self.homework)
-        for files in [[], [str(self.homework), str(text)], [str(symbolic)], [str(self.root)], [str(self.root / 'missing.pdf')]]:
+        for files in [[], [str(self.homework), str(text)], [str(self.root)], [str(self.root / 'missing.pdf')]]:
             with self.subTest(files=files), self.assertRaises((ValueError, SyncError)):
                 self.service.submit_assignment('42', '20', files, expected_attempt=0)
             self.assertFalse(any(row[0] in {'post', 'upload'} for row in self.canvas.calls))
+
+    def make_file_symlink(self, path):
+        try:
+            path.symlink_to(self.homework)
+        except OSError as error:
+            if getattr(error, 'winerror', None) != 1314:
+                raise
+            self.skipTest('Creating a file symlink requires Windows Developer Mode or the symlink privilege')
+
+    def test_upload_rejects_file_symlink(self):
+        symbolic = self.root / 'linked.pdf'
+        self.make_file_symlink(symbolic)
+        with self.assertRaises(SyncError):
+            self.service.submit_assignment('42', '20', [str(symbolic)], expected_attempt=0)
+        self.assertFalse(any(row[0] in {'post', 'upload'} for row in self.canvas.calls))
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows path handling')
+    def test_windows_transfer_rejects_junctions_and_alternate_data_streams(self):
+        outside = self.root / 'outside'
+        outside.mkdir()
+        (outside / self.homework.name).write_bytes(b'%PDF-outside')
+        link = self.root / 'junction'
+        link_directory(link, outside)
+        for path in (link / self.homework.name, self.root / '答案.pdf:secret.pdf'):
+            with self.subTest(path=path), self.assertRaises((ValueError, SyncError)):
+                self.service.submit_assignment('42', '20', [str(path)], expected_attempt=0)
+        self.assertFalse(any(row[0] in {'post', 'upload'} for row in self.canvas.calls))
 
     def test_upload_failure_and_cancellation_never_submit(self):
         with patch.object(self.canvas, 'upload_file', side_effect=SyncError('upload failed')):

@@ -6,6 +6,7 @@ import re
 import stat
 from urllib.parse import urlparse
 
+from . import file_access
 from .documents import visible_grade
 from .errors import DownloadSizeMismatch, SyncError
 from .file_sync import _download, _open_directory, _check_directory, _MAX_FILE_SIZE
@@ -35,7 +36,7 @@ def local_path(value):
     if not isinstance(value, str) or not value or any(ord(char) < 32 for char in value):
         raise ValueError("请指定本地文件的完整路径")
     path = Path(value).expanduser()
-    if not path.is_absolute() or '..' in path.parts or path.name in ('', '.', '..'):
+    if not path.is_absolute() or '..' in path.parts or not file_access.valid_name(path.name):
         raise ValueError("请指定本地文件的绝对路径")
     return path
 
@@ -56,13 +57,13 @@ def download_file(client, course_id, file_id, destination, check_cancelled):
             raise SyncError("文件大小无效或超过 512 MB。", code='invalid_file')
         temporary, digest = _download(client, raw['url'], directory, client.cancel_event if hasattr(client, 'cancel_event') else None,
                                       expected_size=expected)
-        actual = os.stat(temporary, dir_fd=directory, follow_symlinks=False).st_size
+        actual = file_access.inspect(directory, temporary).st_size
         if actual != expected:
             raise DownloadSizeMismatch(expected, actual)
         check_cancelled()
         _check_directory(path.parent, directory)
         try:
-            os.link(temporary, path.name, src_dir_fd=directory, dst_dir_fd=directory, follow_symlinks=False)
+            file_access.link(directory, temporary, directory, path.name)
         except FileExistsError:
             raise SyncError("目标文件已存在，请使用新文件名。", code='destination_exists') from None
         return {'status': 'downloaded', 'course_id': course_id, 'file_id': file_id,
@@ -70,9 +71,11 @@ def download_file(client, course_id, file_id, destination, check_cancelled):
     except OSError as error:
         raise SyncError('无法写入本地课件文件，请检查目标目录权限及剩余空间。', code='local_file_error') from error
     finally:
-        if temporary is not None:
-            os.unlink(temporary, dir_fd=directory)
-        os.close(directory)
+        try:
+            if temporary is not None:
+                file_access.unlink(directory, temporary)
+        finally:
+            file_access.close(directory)
 
 
 def read_assignment(client, course_id, assignment_id):
@@ -127,11 +130,11 @@ def submit_assignment(client, store, course_id, assignment_id, file_paths, expec
                 raise SyncError("所选文件格式不符合作业要求。", code='invalid_file')
             directory = _open_directory(path.parent)
             try:
-                descriptor = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+                descriptor = file_access.open_read(directory, path.name)
             except OSError:
                 raise SyncError("上传源必须是可读取的普通文件，不能使用符号链接。", code='invalid_file') from None
             finally:
-                os.close(directory)
+                file_access.close(directory)
             stream = stack.enter_context(os.fdopen(descriptor, 'rb'))
             info = os.fstat(stream.fileno())
             if not stat.S_ISREG(info.st_mode) or not 0 <= info.st_size <= _MAX_FILE_SIZE:

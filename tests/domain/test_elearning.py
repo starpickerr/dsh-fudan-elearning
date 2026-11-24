@@ -1,6 +1,7 @@
 import io
 import http.client
 import json
+import os
 import threading
 import time
 import urllib.error
@@ -10,11 +11,13 @@ import pytest
 from stella_elearning_test_support import settings, Canvas, ElearningSource, ServiceCall as ElearningTool
 from stella_elearning_test_support import LoginRequired, SyncCancelled, SyncError, client, ElearningStore
 from stella_elearning_test_support.fakes import config, FakeCanvas, BASE, _capture_cancel
+from tests.filesystem import link_directory
 def test_settings_mask_save_replacement_scope_and_deletion(config_path):
     public = settings.save_settings(config())
     assert public["configured"] and public["password_masked"] == "********"
     assert "campus-secret" not in json.dumps(public)
-    assert config_path.stat().st_mode & 0o777 == 0o600
+    if os.name == 'posix':
+        assert config_path.stat().st_mode & 0o777 == 0o600
     settings.save_settings({"password": "********", "courses": ["43"]})
     assert settings.load_settings()["password"] == "campus-secret"
     settings.save_settings({"password": "replacement"})
@@ -39,7 +42,8 @@ def test_course_names_are_cached_per_account_for_settings(config_path):
     assert public["courses"] == ["42"]
     assert public["course_options"] == [{"id": "42", "name": "课程"}]
     assert "campus-secret" not in json.dumps(public)
-    assert settings.course_options_path(settings.load_settings()).stat().st_mode & 0o777 == 0o600
+    if os.name == 'posix':
+        assert settings.course_options_path(settings.load_settings()).stat().st_mode & 0o777 == 0o600
     previous_path = settings.course_options_path(settings.load_settings())
     changed = settings.save_settings({"username": "another", "password": "new-password"})
     assert changed["course_options"] == []
@@ -320,7 +324,7 @@ def test_courseware_layout_adopts_existing_original_name_and_blocks_symlink(conf
     outside = tmp_path / "outside"
     outside.mkdir()
     unsafe = root / "其他课程"
-    unsafe.symlink_to(outside, target_is_directory=True)
+    link_directory(unsafe, outside)
     canvas.rows["courses"] = [{"id": 42, "name": "其他课程"}]
     # A new layout manifest maps this course to its original safe directory;
     # exercise a fresh account so the symlink is the first candidate.
@@ -551,7 +555,7 @@ def test_file_sync_rejects_symlink_escape_and_changed_configuration(config_path,
     cfg = settings.load_settings()
     course = {"id": 42, "name": "课程"}
     raw = {"id": 4, "filename": "讲义.pdf", "url": BASE + "/files/4/download"}
-    (root / "课程--42").symlink_to(outside, target_is_directory=True)
+    link_directory(root / "课程--42", outside)
     client = Mock()
     assert "安全目录" in sync_files(client, cfg, [(course, raw)])[0]
     assert list(outside.iterdir()) == []

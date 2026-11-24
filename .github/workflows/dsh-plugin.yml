@@ -9,7 +9,14 @@ on:
 
 jobs:
   pack:
-    runs-on: macos-15
+    strategy:
+      matrix:
+        include:
+          - runner: macos-15
+            platform: mac-arm64
+          - runner: windows-latest
+            platform: win-x64
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     defaults:
       run:
@@ -36,14 +43,20 @@ jobs:
           cache-dependency-path: dsh-fudan-elearning/plugin/package-lock.json
       - run: |
           python -m venv .venv
-          .venv/bin/pip install --require-hashes -r requirements.lock
-          .venv/bin/pip install PyInstaller==6.22.3
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            python_exe=.venv/Scripts/python.exe
+          else
+            python_exe=.venv/bin/python
+          fi
+          "$python_exe" -m pip install --require-hashes -r requirements.lock
+          "$python_exe" -m pip install PyInstaller==6.22.3
           npm ci --prefix plugin --ignore-scripts
+        shell: bash
       - name: Package the native plugin
         working-directory: dsh-fudan-elearning/plugin
         run: npm pack
       - uses: actions/upload-artifact@v7
         with:
-          name: dsh-plugin-mac-arm64
+          name: dsh-plugin-${{ matrix.platform }}
           path: dsh-fudan-elearning/plugin/*.tgz
           if-no-files-found: error
